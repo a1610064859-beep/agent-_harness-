@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>财税 Agent Harness</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1d232b; --muted: #66707c; --line: #e3e6ea;
+  --accent: #1f6feb; --accent-soft: #e8f0fe; --ok: #1a7f37; --ok-soft: #e6f4ea;
+  --warn: #9a6700; --warn-soft: #fff4d6; --bad: #c62828; --bad-soft: #fdecea;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --panel: #191d23; --ink: #e6e9ed; --muted: #8b95a1; --line: #2a3038;
+    --accent: #58a6ff; --accent-soft: #15233a; --ok: #3fb950; --ok-soft: #12261a;
+    --warn: #d29922; --warn-soft: #2a2110; --bad: #f85149; --bad-soft: #2d1515; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 system-ui, "Microsoft YaHei", "PingFang SC", sans-serif; }
+header { display: flex; align-items: baseline; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+header .sub { color: var(--muted); font-size: 12px; }
+main { display: grid; grid-template-columns: 280px minmax(0, 1fr) 440px; height: calc(100vh - 49px); }
+section { overflow: auto; }
+.left, .right { background: var(--panel); border-right: 1px solid var(--line); padding: 16px; }
+.right { border-right: 0; border-left: 1px solid var(--line); padding: 0; display: flex; flex-direction: column; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+h2:first-child { margin-top: 0; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+select, input, textarea, button { font: inherit; color: inherit; }
+select, input, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: var(--bg); }
+.muted { color: var(--muted); }
+.chip { display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px; margin: 2px 4px 2px 0; background: var(--accent-soft); color: var(--accent); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.bad { background: var(--bad-soft); color: var(--bad); }
+.chip.warn { background: var(--warn-soft); color: var(--warn); }
+.chat { display: flex; flex-direction: column; min-height: 0; }
+#log { flex: 1; overflow: auto; padding: 20px 24px; }
+.msg { max-width: 760px; margin: 0 auto 16px; }
+.msg .who { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.msg.user .bubble { background: var(--accent-soft); }
+.bubble { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.bubble p { margin: 0 0 8px; } .bubble p:last-child { margin: 0; }
+.bubble table { border-collapse: collapse; margin: 6px 0; font-size: 13px; }
+.bubble td, .bubble th { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
+.bubble ul { margin: 4px 0 8px; padding-left: 20px; }
+.event { text-align: center; color: var(--muted); font-size: 12px; margin: 0 0 16px; }
+.meta { font-size: 12px; margin-top: 6px; }
+.meta a { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.composer { border-top: 1px solid var(--line); padding: 12px 24px; background: var(--panel); }
+.composer .row { display: flex; gap: 8px; max-width: 760px; margin: 0 auto; }
+.composer textarea { resize: none; height: 44px; }
+.quick { max-width: 760px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.quick button { font-size: 12px; padding: 2px 10px; border-radius: 12px; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tabs button { flex: 1; border: 0; border-radius: 0; padding: 10px; border-bottom: 2px solid transparent; }
+.tabs button.on { border-bottom-color: var(--accent); color: var(--accent); }
+.pane { padding: 14px 16px; overflow: auto; flex: 1; }
+.step { border-left: 3px solid var(--line); padding: 4px 0 4px 10px; margin: 8px 0; }
+.step.tool { border-color: var(--accent); } .step.tool.err { border-color: var(--bad); }
+.step.out { border-color: var(--ok); }
+details summary { cursor: pointer; }
+pre { font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin: 6px 0; max-height: 360px; overflow: auto; }
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th, table.data td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.blank { color: var(--warn); }
+.changed { background: var(--ok-soft); }
+@media (max-width: 1100px) {
+  main { grid-template-columns: 1fr; height: auto; }
+  .left, .right { border: 0; border-bottom: 1px solid var(--line); }
+  #log { min-height: 50vh; }
+  .right { min-height: 60vh; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>财税 Agent Harness</h1>
+  <span class="sub" id="metaline"></span>
+</header>
+<main>
+  <section class="left">
+    <h2>会话</h2>
+    <label for="user">用户</label><select id="user"></select>
+    <label for="company">当前企业</label><select id="company"></select>
+    <div class="muted" id="perm" style="margin:6px 0 10px;font-size:12px"></div>
+    <button class="primary" id="newSession" style="width:100%">开始新会话</button>
+    <div class="muted" id="sid" style="font-size:12px;margin-top:6px"></div>
+
+    <h2>任务记忆</h2>
+    <div id="task" class="muted">无</div>
+
+    <h2>长期偏好</h2>
+    <div id="prefs" class="muted">无</div>
+  </section>
+
+  <section class="chat">
+    <div id="log"></div>
+    <div class="composer">
+      <div class="quick" id="quick"></div>
+      <div class="row">
+        <textarea id="input" placeholder="例如：甲企业 9 月发票和银行收支各多少？（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="primary" id="send">发送</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="right">
+    <div class="tabs">
+      <button data-tab="run" class="on">运行记录</button>
+      <button data-tab="data">当前数据</button>
+      <button data-tab="rules">规则</button>
+    </div>
+    <div class="pane" id="pane-run"><p class="muted">发送消息后，这里显示本轮的模型输入、选用的记忆与规则、工具调用及结果。</p></div>
+    <div class="pane" id="pane-data" hidden></div>
+    <div class="pane" id="pane-rules" hidden></div>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const state = { meta: null, sid: null, user: null, company: null, month: "2026-09", lastRun: null };
+const QUICK = ["9 月发票和银行收支各多少？", "9 月哪些发票还没填用途？", "还剩哪些没处理？",
+               "记住：以后回答先给合计，再列明细", "我的记忆里都有什么？", "切到乙企业"];
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || r.statusText);
+  return body;
+}
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function md(text) {
+  const lines = esc(text).split("\n");
+  let html = "", list = false, table = [];
+  const inline = (s) => s.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  const flushTable = () => {
+    if (!table.length) return;
+    const rows = table.filter((r) => !/^\|\s*-/.test(r)).map((r) => r.replace(/^\||\|$/g, "").split("|"));
+    html += "<table>" + rows.map((c, i) => "<tr>" + c.map((x) => `<${i ? "td" : "th"}>${inline(x.trim())}</${i ? "td" : "th"}>`).join("") + "</tr>").join("") + "</table>";
+    table = [];
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line.startsWith("|")) { table.push(line); continue; }
+    flushTable();
+    if (/^[-•]\s+/.test(line) || /^\d+[.、]\s*/.test(line)) {
+      if (!list) { html += "<ul>"; list = true; }
+      html += "<li>" + inline(line.replace(/^[-•]\s+|^\d+[.、]\s*/, "")) + "</li>"; continue;
+    }
+    if (list) { html += "</ul>"; list = false; }
+    if (line) html += "<p>" + inline(line.replace(/^#+\s*/, "")) + "</p>";
+  }
+  flushTable(); if (list) html += "</ul>";
+  return html;
+}
+
+function permText() { return state.meta.permissions[`${state.user}/${state.company}`] || "无权访问"; }
+
+async function init() {
+  state.meta = await api("/api/meta");
+  $("#metaline").textContent = `模型 ${state.meta.model} · 业务日期 ${state.meta.today} · 全部数据为比赛模拟内容`;
+  $("#user").innerHTML = state.meta.users.map((u) => `<option value="${u.user_id}">${u.user_id} ${esc(u.name)}</option>`).join("");
+  $("#company").innerHTML = state.meta.companies.map((c) => `<option value="${c.company_id}">${c.company_id} ${esc(c.short_name)}</option>`).join("");
+  $("#quick").innerHTML = QUICK.map((q) => `<button>${esc(q)}</button>`).join("");
+  $("#quick").onclick = (e) => { if (e.target.tagName === "BUTTON") { $("#input").value = e.target.textContent; $("#input").focus(); } };
+  for (const id of ["#user", "#company"]) $(id).onchange = () => { state.user = $("#user").value; state.company = $("#company").value; $("#perm").textContent = `权限：${permText()}（换用户或企业需开始新会话）`; };
+  $("#newSession").onclick = newSession;
+  $("#send").onclick = send;
+  $("#input").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+  document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => showTab(b.dataset.tab));
+  state.user = $("#user").value; state.company = $("#company").value;
+  await newSession();
+}
+
+function showTab(tab) {
+  document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  for (const t of ["run", "data", "rules"]) $(`#pane-${t}`).hidden = t !== tab;
+  if (tab === "data") renderData(); if (tab === "rules") renderRules();
+}
+
+async function newSession() {
+  state.user = $("#user").value; state.company = $("#company").value;
+  const r = await api("/api/sessions", { method: "POST", body: JSON.stringify({ user_id: state.user, company_id: state.company }) });
+  state.sid = r.session_id;
+  $("#sid").textContent = `会话 ${state.sid}`;
+  $("#perm").textContent = `权限：${permText()}`;
+  $("#log").innerHTML = `<div class="event">新会话：${state.user} · ${state.company}（任务记忆与长期偏好会延续，未执行的修改不会自动执行）</div>`;
+  await refreshSide();
+}
+
+function addMsg(role, text, meta) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="who">${role === "user" ? "你" : "助手"}</div><div class="bubble">${role === "user" ? esc(text).replace(/\n/g, "<br>") : md(text)}</div>`;
+  if (meta) div.appendChild(meta);
+  $("#log").appendChild(div);
+  $("#log").scrollTop = $("#log").scrollHeight;
+  return div;
+}
+
+async function send() {
+  const text = $("#input").value.trim();
+  if (!text || !state.sid) return;
+  $("#input").value = ""; $("#send").disabled = true;
+  addMsg("user", text);
+  const wait = addMsg("assistant", "处理中…");
+  try {
+    const r = await api(`/api/sessions/${state.sid}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+    wait.remove();
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = r.tool_calls.map((c) => `<span class="chip ${c.ok ? "ok" : "bad"}">${esc(c.tool)}${c.ok ? "" : " · " + esc(c.error)}</span>`).join("")
+      + (r.anomalies.length ? `<span class="chip warn">异常 ${r.anomalies.length}</span>` : "")
+      + ` <a data-run="${r.run_id}">运行记录 ${r.run_id}</a>`;
+    meta.querySelector("a").onclick = () => showRun(r.run_id);
+    addMsg("assistant", r.reply, meta);
+    if (r.company_id !== state.company) {
+      state.company = r.company_id; $("#company").value = r.company_id;
+      $("#perm").textContent = `权限：${permText()}`;
+      const ev = document.createElement("div"); ev.className = "event"; ev.textContent = `当前企业已切换为 ${r.company_id}`;
+      $("#log").appendChild(ev);
+    }
+    await Promise.all([refreshSide(), showRun(r.run_id)]);
+  } catch (e) {
+    wait.querySelector(".bubble").innerHTML = `<span style="color:var(--bad)">请求失败：${esc(e.message)}</span>`;
+  } finally { $("#send").disabled = false; $("#input").focus(); }
+}
+
+async function refreshSide() {
+  const m = await api(`/api/memory?user_id=${state.user}&company_id=${state.company}`);
+  const t = m.task;
+  $("#task").innerHTML = t ? `<div class="card"><div>目标：${esc(t.goal || "（未记录）")}</div><div>月份：${esc(t.month || "未确定")}</div>
+    <div style="margin-top:4px">${t.pending.map((i) => `<span class="chip warn">${i} 待补</span>`).join("")}${t.done.map((i) => `<span class="chip ok">${i} 已核验</span>`).join("")}</div>
+    ${t.notes.map((n) => `<div class="muted" style="font-size:12px">· ${esc(n)}</div>`).join("")}</div>` : `<span class="muted">${state.user} 在 ${state.company} 没有未完成任务</span>`;
+  $("#prefs").innerHTML = m.preferences.length ? m.preferences.map((p) => `<div class="card"><div>${esc(p.content)}</div>
+    <div class="muted" style="font-size:12px">${p.memory_id} · 适用 ${esc(p.scope)} · 第 ${p.revision} 版</div>
+    <div style="margin-top:4px"><button data-edit="${p.memory_id}">更正</button> <button data-del="${p.memory_id}">删除</button></div></div>`).join("") : `<span class="muted">无</span>`;
+  $("#prefs").onclick = async (e) => {
+    const id = e.target.dataset.edit || e.target.dataset.del; if (!id) return;
+    if (e.target.dataset.del) {
+      if (!confirm("删除这条记忆？删除后正文会从库中清除。")) return;
+      await api(`/api/memory/${id}?user_id=${state.user}&company_id=${state.company}`, { method: "DELETE" });
+    } else {
+      const content = prompt("更正为："); if (!content) return;
+      await api(`/api/memory/${id}`, { method: "PATCH", body: JSON.stringify({ user_id: state.user, company_id: state.company, content }) });
+    }
+    refreshSide();
+  };
+  if (!$("#pane-data").hidden) renderData();
+}
+
+async function showRun(id) {
+  showTab("run");
+  const r = await api(`/api/runs/${id}`);
+  const steps = r.steps.map((s) => {
+    const p = s.payload;
+    if (s.kind === "llm_input") {
+      const chars = p.messages.reduce((n, m) => n + String(m.content || "").length, 0);
+      return `<div class="step"><details><summary>模型输入 · ${p.messages.length} 条消息 · ${chars} 字</summary>${p.messages.map((m) =>
+        `<div class="muted" style="font-size:12px;margin-top:6px">&lt;${m.role}&gt;</div><pre>${esc(m.content || "")}${m.tool_calls ? "\n" + esc(JSON.stringify(m.tool_calls, null, 1)) : ""}</pre>`).join("")}</details></div>`;
+    }
+    if (s.kind === "llm_output") {
+      const calls = (p.message.tool_calls || []).map((c) => `${c.function.name}(${c.function.arguments})`);
+      return `<div class="step out"><div>模型输出：${calls.length ? "调用 " + esc(calls.join("；")) : "最终回复"}</div>
+        ${p.message.reasoning_content ? `<details><summary class="muted">模型思考摘要</summary><pre>${esc(p.message.reasoning_content)}</pre></details>` : ""}</div>`;
+    }
+    if (s.kind === "tool") {
+      const res = p.result;
+      return `<div class="step tool ${res.ok ? "" : "err"}"><div><b>${esc(p.name)}</b> @${p.company_id} ${res.ok ? '<span class="chip ok">成功</span>' : `<span class="chip bad">${esc(res.error.code)}</span>`}</div>
+        <details><summary class="muted">参数与结果</summary><pre>${esc(p.arguments)}</pre><pre>${esc(JSON.stringify(res.ok ? res.data : res.error, null, 1))}</pre></details></div>`;
+    }
+    return `<div class="step"><pre>${esc(JSON.stringify(p, null, 1))}</pre></div>`;
+  }).join("");
+  const sel = r.selected;
+  $("#pane-run").innerHTML = `<div class="card"><div><b>${r.run_id}</b> · ${r.user_id}/${r.company_id} · ${r.status}</div>
+    <div class="muted" style="font-size:12px">${r.started_at} · 模型 ${esc(r.model)} · 输入 ${r.usage.prompt_tokens ?? "-"} / 输出 ${r.usage.completion_tokens ?? "-"} tokens</div></div>
+    <div class="card"><div>用户：${esc(r.user_message)}</div>
+    <div style="margin-top:4px">选用记忆：${(sel.memories || []).map((m) => `<span class="chip">${m}</span>`).join("") || '<span class="muted">无</span>'}
+    ${sel.task ? `<span class="chip">任务 ${sel.task}</span>` : ""}</div>
+    <div>工具返回的规则：${(sel.rules_cited_by_tools || []).map((x) => `<span class="chip ok">${x}</span>`).join("") || '<span class="muted">无</span>'}</div>
+    ${r.anomalies.length ? `<div style="color:var(--warn)">异常：${esc(r.anomalies.join("；"))}</div>` : ""}</div>${steps}`;
+}
+
+async function renderData() {
+  const [inv, ops] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`), api(`/api/operations?company_id=${state.company}`)]);
+  const months = ["2026-07", "2026-08", "2026-09"].map((m) => `<option ${m === state.month ? "selected" : ""}>${m}</option>`).join("");
+  $("#pane-data").innerHTML = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>${state.company} 发票</b>
+    <select id="month" style="width:auto">${months}</select><span class="muted" style="font-size:12px">库内当前数据（非原始 Excel）</span></div>
+    ${inv.length ? `<table class="data"><tr><th>编号</th><th>日期</th><th>金额</th><th>用途</th><th>备注</th><th>版</th></tr>${inv.map((i) =>
+      `<tr class="${i.version > 1 ? "changed" : ""}"><td>${i.invoice_id}</td><td>${i.issue_date.slice(5)}</td><td class="num">${i.amount}</td>
+      <td class="${(i.purpose || "").trim() ? "" : "blank"}">${esc(i.purpose || "（空）")}</td><td>${esc(i.remark || "")}</td><td>v${i.version}</td></tr>`).join("")}</table>` : `<p class="muted">该月没有发票记录。</p>`}
+    <h2 style="margin-top:18px">保存操作（写后回读）</h2>
+    ${ops.length ? ops.map((o) => `<div class="card"><div><b>${o.op_id}</b> ${o.company_id}/${o.invoice_id} <span class="chip ${o.status === "verified" ? "ok" : "bad"}">${o.status}</span></div>
+      <div class="muted" style="font-size:12px">${o.created_at} · ${o.user_id} · 运行 ${o.run_id}</div>
+      <div style="font-size:12px">用途：${esc(o.before_json.purpose || "（空）")} → <b>${esc(o.after_json?.purpose || "（空）")}</b>；备注：${esc(o.before_json.remark || "（空）")} → <b>${esc(o.after_json?.remark || "（空）")}</b></div></div>`).join("") : `<p class="muted">暂无保存操作。</p>`}`;
+  $("#month").onchange = (e) => { state.month = e.target.value; renderData(); };
+}
+
+async function renderRules() {
+  const rules = await api(`/api/rules?company_id=${state.company}`);
+  $("#pane-rules").innerHTML = `<p class="muted" style="font-size:12px">${state.company} 相关规则版本。管理（导入、更新、停用）通过命令行：python -m fiscal_harness rules …</p>` +
+    rules.map((r) => `<div class="card"><div><b>${r.rule_id}</b>《${esc(r.name)}》${r.version} 版
+      <span class="chip ${r.status === "active" ? "ok" : "bad"}">${r.status === "active" ? "启用" : "已停用"}</span>
+      ${r.applicable_today ? '<span class="chip">今日适用</span>' : ""}</div>
+      <div class="muted" style="font-size:12px">生效 ${r.effective_from}</div>
+      <details><summary class="muted">条款</summary>${r.body.map((b, i) => `<div style="font-size:13px;margin-top:4px">[${i + 1}] ${esc(b)}</div>`).join("")}</details></div>`).join("");
+}
+
+init().catch((e) => { $("#log").innerHTML = `<div class="event" style="color:var(--bad)">初始化失败：${esc(e.message)}</div>`; });
+</script>
+</body>
+</html>

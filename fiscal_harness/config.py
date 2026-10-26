@@ -1,0 +1,58 @@
+"""运行配置：只从环境变量和项目根目录的 .env 读取，密钥不写入任何日志。"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv(path: Path) -> None:
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_dotenv(ROOT / ".env")
+
+
+@dataclass(frozen=True)
+class Settings:
+    db_path: Path
+    sample_xlsx: Path
+    rules_docx: Path
+    llm_provider: str
+    llm_base_url: str
+    llm_model: str
+    llm_effort: str | None
+    max_steps: int
+    history_chars: int
+    today: date
+
+    @property
+    def api_key(self) -> str:
+        # 每次现取，避免密钥被 dataclass repr 或运行记录带出
+        return os.environ.get("LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
+
+
+def load_settings() -> Settings:
+    today = os.environ.get("FH_TODAY")
+    return Settings(
+        db_path=Path(os.environ.get("FH_DB", ROOT / "data" / "harness.db")),
+        sample_xlsx=Path(os.environ.get("FH_SAMPLE_XLSX", ROOT / "data" / "source" / "sample_data_v1.1.0.xlsx")),
+        rules_docx=Path(os.environ.get("FH_RULES_DOCX", ROOT / "data" / "source" / "business_rules_v1.1.0.docx")),
+        llm_provider=os.environ.get("LLM_PROVIDER", "openai_compat"),
+        llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/"),
+        llm_model=os.environ.get("LLM_MODEL", "deepseek-flash"),
+        llm_effort=os.environ.get("LLM_EFFORT") or None,
+        max_steps=int(os.environ.get("FH_MAX_STEPS", "8")),
+        history_chars=int(os.environ.get("FH_HISTORY_CHARS", "6000")),
+        today=date.fromisoformat(today) if today else date.today(),
+    )

@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+/data/*.db
+/data/*.db-*
+node_modules/
+.pytest_cache/
+materials/**/*.zip
+materials/**/*.jpg
+materials/**/official-v1.1.0/
+evals/results/**/
+!evals/results/20261026-082634/
