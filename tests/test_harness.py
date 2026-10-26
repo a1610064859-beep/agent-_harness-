@@ -76,8 +76,9 @@ def test_step_limit(conn, settings):
 
 
 def test_api_key_never_logged(conn, settings, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test1234567890abcdef")
+    fake = "sk" + "-test1234567890abcdef"  # 拼接生成，避免源码本身被密钥扫描命中
+    monkeypatch.setenv("DEEPSEEK_API_KEY", fake)
     sid = harness.start_session(conn, "U001", "C001")
-    harness.run_turn(conn, ScriptedLLM([{"content": "密钥是 sk-test1234567890abcdef"}]), settings, sid, "hi")
+    harness.run_turn(conn, ScriptedLLM([{"content": f"密钥是 {fake}"}]), settings, sid, "hi")
     dump = json.dumps([dict(r) for r in conn.execute("SELECT payload FROM run_steps")], ensure_ascii=False)
-    assert "sk-test1234567890abcdef" not in dump
+    assert fake not in dump
