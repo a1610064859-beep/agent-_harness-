@@ -12,3 +12,6 @@ materials/**/official-v1.1.0/
 evals/results/**/
 !evals/results/20261026-082634/
 .tools/
+dist/
+!evals/results/experiment-*/
+!evals/results/20261026-091716/

@@ -102,7 +102,8 @@ def prefs(user, company, pred, desc):
 
 def asks(i):
     def check(ctx):
-        return bool(re.search(r"[?？]", ctx.replies[i])), f"第 {i + 1} 轮应当追问"
+        # 追问可能以问号结尾，也可能是“请告诉我…”这类祈使句
+        return bool(re.search(r"[?？]|请告诉|请问|请提供|请说明|请确认|哪个月|哪一个月", ctx.replies[i])), f"第 {i + 1} 轮应当追问"
     return check
 
 

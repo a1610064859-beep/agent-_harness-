@@ -56,15 +56,16 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                  (session_id, scope.company_id, "user", user_message, scope.run_id, _now()))
     box = tools.Toolbox(conn, scope)
 
-    system, selected = context.build_system(conn, scope)
+    system, selected = context.build_system(conn, scope, settings.variant)
     messages = [{"role": "system", "content": system}] + context.history(conn, scope, settings.history_chars)
     usage_total: dict[str, int] = {}
     calls: list[dict] = []
     reply, status = "", "completed"
     try:
         for _ in range(settings.max_steps):
-            log.step("llm_input", {"messages": messages, "tools": [t["function"]["name"] for t in tools.TOOL_SPECS]})
-            out = llm.chat(messages, tools.TOOL_SPECS)
+            specs = tools.tool_specs(settings.variant)
+            log.step("llm_input", {"messages": messages, "tools": [t["function"]["name"] for t in specs]})
+            out = llm.chat(messages, specs)
             for k, v in out.usage.items():
                 if isinstance(v, int):
                     usage_total[k] = usage_total.get(k, 0) + v
@@ -76,7 +77,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
             for call in out.message["tool_calls"]:
                 name, args = call["function"]["name"], call["function"]["arguments"]
                 company_before = scope.company_id
-                result = tools.dispatch(box, name, args)
+                result = tools.dispatch(box, name, args, settings.variant)
                 calls.append({"tool": name, "args": args, "ok": result["ok"],
                               "error": result.get("error", {}).get("code")})
                 log.step("tool", {"name": name, "arguments": args, "company_id": company_before, "result": result})

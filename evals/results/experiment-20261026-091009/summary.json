@@ -1,0 +1,35 @@
+{
+ "model": "deepseek-flash",
+ "repeat": 5,
+ "question": "9月有哪些发票按规则必须填用途但还没填？回答最后单独一行用“缺用途：编号,编号”列出（没有就写“缺用途：无”）。",
+ "variants": {
+  "baseline": {
+   "exact": "20/20",
+   "by_case": {
+    "X1": "5/5",
+    "X2": "5/5",
+    "X3": "5/5",
+    "X4": "5/5"
+   },
+   "unparsed": 0,
+   "false_positive_items": 0,
+   "false_negative_items": 0,
+   "avg_tool_calls": 2.35,
+   "avg_prompt_tokens": 8041
+  },
+  "model_rules": {
+   "exact": "20/20",
+   "by_case": {
+    "X1": "5/5",
+    "X2": "5/5",
+    "X3": "5/5",
+    "X4": "5/5"
+   },
+   "unparsed": 0,
+   "false_positive_items": 0,
+   "false_negative_items": 0,
+   "avg_tool_calls": 3.0,
+   "avg_prompt_tokens": 8683
+  }
+ }
+}

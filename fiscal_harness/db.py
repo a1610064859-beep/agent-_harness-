@@ -118,8 +118,10 @@ CREATE TABLE IF NOT EXISTS operations (
     invoice_id TEXT NOT NULL,
     before_json TEXT NOT NULL,
     after_json TEXT,
+    intended_json TEXT,                -- 打算写入的字段与值，用于中断后的回读核对
     status TEXT NOT NULL CHECK (status IN ('pending', 'verified', 'mismatch', 'failed')),
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    recovered_at TEXT                  -- 由启动恢复流程补做回读核验的时间
 );
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -147,6 +149,18 @@ CREATE TABLE IF NOT EXISTS run_steps (
 """
 
 
+# 旧库升级：只追加列，不改已有数据
+MIGRATIONS = {"operations": {"intended_json": "TEXT", "recovered_at": "TEXT"}}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, cols in MIGRATIONS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, typ in cols.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+
 def connect(path: Path | str) -> sqlite3.Connection:
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -156,4 +170,5 @@ def connect(path: Path | str) -> sqlite3.Connection:
     if str(path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn

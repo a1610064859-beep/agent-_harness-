@@ -53,16 +53,31 @@ scripts/setup.sh
 | `rules disable R003 2.0` / `rules enable …` | 停用或启用某个版本 |
 | `memory list / edit M-xx --content … / delete M-xx --user U001 --company C001` | 查看、更正、删除记忆 |
 | `runs list` / `runs show R-xxxx [--full] [--json]` | 运行记录：完整模型输入、选用的记忆与规则、工具调用及结果 |
+| `runs export --all --out DIR` | 导出运行记录（每轮一份 JSON，另附可读的 README.md） |
+| `recover` | 核对中断留下的未回读写入（`chat`、`ask`、`serve` 启动时会自动执行） |
 | `data invoices --company C001 --month 2026-09` / `data ops` | 核对库内当前数据，以及每次写入的前后对比 |
 
 ## 验证
 
 ```bash
-python -m pytest -q          # 36 项确定性测试：标准答案、权限、隔离、幂等、回读、记忆、规则版本，不调用模型
-python -m evals.run --repeat 3   # 24 个多轮案例用真实模型运行，结果写入 evals/results/<时间>/
+python -m pytest -q                  # 42 项确定性测试，不调用模型
+python -m evals.run --repeat 3       # 24 个多轮案例，真实模型
+python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
+python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录
 ```
 
-最近一次真实评测（2026-10-26，deepseek-flash）：**72/72 通过**（24 个案例 × 3 次），明细见 `evals/results/20261026-082634/`。评测结果只记录实际运行得到的数据。
+最近一次结果（2026-10-26，deepseek-flash）：
+
+- 多轮评测：**72/72**
+- 对比实验：常规题两组都全对；条文冲突题中，模型自选有 5/10 次按已停用规则作答，程序解析 0 次
+
+详见 [docs/acceptance/report.md](docs/acceptance/report.md)。演示步骤见 [docs/demo-script.md](docs/demo-script.md)。
+
+故障演示：设置 `FH_FAULT=crash_after_commit` 后执行一次保存，会在提交后、回读前模拟中断；下次启动时自动回读核对。
+
+## 提交打包
+
+`python scripts/package.py` 只打包 git 已跟踪的文件，不含 `.env`、虚拟环境和数据库，也不含内部规划；打包前会扫描密钥。输出在 `dist/`。
 
 ## 目录
 
@@ -79,8 +94,8 @@ fiscal_harness/
 web/index.html  演示网页（单文件，不需要构建）
 data/source/    官方材料原件（只在导入时读取）
 tests/          确定性测试
-evals/          多轮评测案例与运行器
-docs/           规划、设计说明、审查记录
+evals/          多轮评测、对比实验、演示运行（结果在 evals/results/）
+docs/           设计说明、演示脚本、验收报告与演示运行记录、审查材料、开发规划
 ```
 
 设计说明见 [docs/design.md](docs/design.md)。

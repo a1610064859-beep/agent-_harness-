@@ -9,6 +9,7 @@ from __future__ import annotations
 import calendar
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -24,6 +25,10 @@ CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, 
           "十一": 11, "十二": 12}
 # 只允许本次初赛范围内的月份做用途检查（《业务规则》：初赛仅检查 2026 年 9 月发票用途）
 PURPOSE_CHECK_MONTHS = ("2026-09",)
+
+
+class SimulatedCrash(RuntimeError):
+    """故障注入：FH_FAULT=crash_after_commit 时，在写入提交后、回读前模拟进程中断。"""
 
 
 class ToolError(Exception):
@@ -196,42 +201,17 @@ class Toolbox:
     def check_purpose(self, month: str) -> dict:
         self._require("read")
         self._check_month(month)
-        if month not in PURPOSE_CHECK_MONTHS:
-            raise ToolError("OUT_OF_SCOPE", f"《业务规则》说明初赛只检查 {'、'.join(PURPOSE_CHECK_MONTHS)} 的发票用途，"
-                                            f"{month} 的数据只用于金额查询。")
-        start, end = _month_bounds(month)
-        resolved = self._resolve_one(date.fromisoformat(end), topic="purpose")
-        if not resolved or not resolved.chosen:
-            raise ToolError("NO_RULE", f"{self.scope.company_id} 在 {month} 没有有效的发票用途规则，无法判断哪些必填。",
-                            excluded_versions=resolved.excluded if resolved else [])
-        params = json.loads(resolved.chosen["params"])
-        if "purpose_required_min_cents" not in params:
-            raise ToolError("RULE_NOT_EXECUTABLE", "适用规则缺少金额门槛参数，请用 rules update --param 补充。")
-        threshold = params["purpose_required_min_cents"]
-        ref = self._cite(resolved.ref())
-        rows = self.conn.execute("SELECT * FROM invoices WHERE company_id=? AND issue_date BETWEEN ? AND ? "
-                                 "ORDER BY invoice_id", (self.scope.company_id, start, end)).fetchall()
-        missing, optional_blank, filled = [], [], []
-        for r in rows:
-            if (r["purpose"] or "").strip():
-                filled.append(r["invoice_id"])
-            elif r["amount_cents"] >= threshold:
-                missing.append(r)
-            else:
-                optional_blank.append(r)
+        status = purpose_status(self.conn, self.scope.company_id, month)
+        ref = self._cite(status["rule"])
         task = self._task()
         memory.update_task(self.conn, task["task_id"], month=month)
         label = f'{ref["rule_id"]} {ref["version"]}'
+        previous = {r["rule_ref"] for r in memory.items(self.conn, task["task_id"])
+                    if r["state"] == "pending" and r["rule_ref"]} - {label}
         memory.sync_purpose_items(self.conn, task["task_id"], self.scope.company_id,
-                                  [r["invoice_id"] for r in missing], filled, label)
-        return {"company_id": self.scope.company_id, "month": month, "rule": ref,
-                "requirement": "每张发票都必须填写用途" if threshold == 0
-                else f"金额大于或等于 {fmt(threshold)} 元的发票必须填写用途",
-                "excluded_versions": resolved.excluded,
-                "missing_required": [_invoice_view(r) for r in missing],
-                "missing_required_total": fmt(sum(r["amount_cents"] for r in missing)),
-                "blank_but_not_required": [r["invoice_id"] for r in optional_blank],
-                "filled_count": len(filled), "invoice_count": len(rows),
+                                  [r["invoice_id"] for r in status["missing_required"]], status["filled"], label)
+        status.pop("filled")
+        return {**status, "rule_changed_since_last_check": sorted(previous) or None,
                 "hint": "空白或只有空格视为未填写；备注不能代替用途；不能根据销售方或项目名称推测用途。"}
 
     def search_rules(self, query: str, month: str | None = None) -> dict:
@@ -250,6 +230,16 @@ class Toolbox:
             raise ToolError("NO_RULE", f"{rule_id} 对当前企业在 {as_of} 没有有效版本。")
         self._cite({k: rule[k] for k in ("rule_id", "name", "version", "effective_from")})
         return rule
+
+    def list_rule_documents(self) -> dict:
+        """仅用于对比实验的对照组：不做适用性解析，原样返回与当前企业相关的全部规则版本。"""
+        rows = self.conn.execute("SELECT * FROM rule_versions ORDER BY rule_id, effective_from").fetchall()
+        docs = [{"rule_id": r["rule_id"], "name": r["name"], "version": r["version"], "status": r["status"],
+                 "effective_from": r["effective_from"], "companies": json.loads(r["companies"]), "text": r["body"]}
+                for r in rows if self.scope.company_id in json.loads(r["companies"])]
+        for d in docs:
+            self._cite({k: d[k] for k in ("rule_id", "name", "version", "effective_from")})
+        return {"documents": docs}
 
     # ---------- 写入 ----------
 
@@ -298,21 +288,19 @@ class Toolbox:
                 raise ToolError("CONFLICT", "发票在保存前被其他操作修改，请重新查询后再确认。")
             self.conn.execute(
                 "INSERT INTO operations (op_id, idempotency_key, run_id, session_id, user_id, company_id, invoice_id,"
-                " before_json, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " before_json, intended_json, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (op_id, key, self.scope.run_id, self.scope.session_id, self.scope.user_id, cid, invoice_id,
-                 json.dumps(_invoice_view(before), ensure_ascii=False), "pending", _now()))
+                 json.dumps(_invoice_view(before), ensure_ascii=False),
+                 json.dumps({**changes, "version": before["version"] + 1}, ensure_ascii=False), "pending", _now()))
             self.conn.execute("COMMIT")
         except Exception:
             if self.conn.in_transaction:
                 self.conn.execute("ROLLBACK")
             raise
+        if os.environ.get("FH_FAULT") == "crash_after_commit":
+            raise SimulatedCrash(f"{op_id} 已提交但尚未回读")
         # 保存后重新查询核对
-        after = self._read_invoice(cid, invoice_id)
-        verified = after is not None and all((after[k] or "") == v for k, v in changes.items()) \
-            and after["version"] == before["version"] + 1
-        self.conn.execute("UPDATE operations SET after_json=?, status=? WHERE op_id=?",
-                          (json.dumps(_invoice_view(after), ensure_ascii=False) if after else None,
-                           "verified" if verified else "mismatch", op_id))
+        verified, after = verify_operation(self.conn, op_id)
         item_done = False
         if verified and (after["purpose"] or "").strip():
             task = self._task()
@@ -410,6 +398,73 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def purpose_status(conn: sqlite3.Connection, company_id: str, month: str) -> dict:
+    """按适用的有效用途规则检查某月发票（纯计算，不改任务记忆）。工具与演示页概览共用。"""
+    if month not in PURPOSE_CHECK_MONTHS:
+        raise ToolError("OUT_OF_SCOPE", f"《业务规则》说明初赛只检查 {'、'.join(PURPOSE_CHECK_MONTHS)} 的发票用途，"
+                                        f"{month} 的数据只用于金额查询。")
+    start, end = _month_bounds(month)
+    res = knowledge.resolve(conn, company_id, as_of=date.fromisoformat(end), topic="purpose")
+    resolved = res[0] if res else None
+    if not resolved or not resolved.chosen:
+        raise ToolError("NO_RULE", f"{company_id} 在 {month} 没有有效的发票用途规则，无法判断哪些必填。",
+                        excluded_versions=resolved.excluded if resolved else [])
+    params = json.loads(resolved.chosen["params"])
+    if "purpose_required_min_cents" not in params:
+        raise ToolError("RULE_NOT_EXECUTABLE", "适用规则缺少金额门槛参数，请用 rules update --param 补充。")
+    threshold = params["purpose_required_min_cents"]
+    rows = conn.execute("SELECT * FROM invoices WHERE company_id=? AND issue_date BETWEEN ? AND ? "
+                        "ORDER BY invoice_id", (company_id, start, end)).fetchall()
+    missing, optional_blank, filled = [], [], []
+    for r in rows:
+        if (r["purpose"] or "").strip():
+            filled.append(r["invoice_id"])
+        elif r["amount_cents"] >= threshold:
+            missing.append(r)
+        else:
+            optional_blank.append(r)
+    return {"company_id": company_id, "month": month, "rule": resolved.ref(),
+            "requirement": "每张发票都必须填写用途" if threshold == 0
+            else f"金额大于或等于 {fmt(threshold)} 元的发票必须填写用途",
+            "excluded_versions": resolved.excluded,
+            "missing_required": [_invoice_view(r) for r in missing],
+            "missing_required_total": fmt(sum(r["amount_cents"] for r in missing)),
+            "blank_but_not_required": [r["invoice_id"] for r in optional_blank],
+            "filled_count": len(filled), "invoice_count": len(rows), "filled": filled}
+
+
+def verify_operation(conn: sqlite3.Connection, op_id: str) -> tuple[bool, sqlite3.Row | None]:
+    """按 intended_json 回读目标发票并更新操作状态。写入流程和启动恢复共用。"""
+    op = conn.execute("SELECT * FROM operations WHERE op_id=?", (op_id,)).fetchone()
+    intended = json.loads(op["intended_json"])
+    after = conn.execute("SELECT * FROM invoices WHERE company_id=? AND invoice_id=?",
+                         (op["company_id"], op["invoice_id"])).fetchone()
+    verified = after is not None and all((after[k] or "") == v for k, v in intended.items())
+    conn.execute("UPDATE operations SET after_json=?, status=? WHERE op_id=?",
+                 (json.dumps(_invoice_view(after), ensure_ascii=False) if after else None,
+                  "verified" if verified else "mismatch", op_id))
+    return verified, after
+
+
+def recover_pending(conn: sqlite3.Connection) -> list[dict]:
+    """启动时核对中断留下的 pending 写入：回读后标记 verified 或 mismatch，并写入对应任务记忆，
+    下一轮对话会如实告诉用户。只做核对，不重新提交。"""
+    conn.execute("UPDATE runs SET status='interrupted', ended_at=? WHERE status='running'", (_now(),))
+    out = []
+    for op in conn.execute("SELECT * FROM operations WHERE status='pending' ORDER BY created_at").fetchall():
+        verified, after = verify_operation(conn, op["op_id"])
+        conn.execute("UPDATE operations SET recovered_at=? WHERE op_id=?", (_now(), op["op_id"]))
+        task = memory.open_task(conn, op["user_id"], op["company_id"])
+        if task:
+            if verified and after and (after["purpose"] or "").strip():
+                memory.mark_item_done(conn, task["task_id"], op["invoice_id"], f"{op['op_id']} 恢复后回读核验")
+            memory.update_task(conn, task["task_id"], note=(
+                f"上次保存 {op['invoice_id']} 时程序中断，重启后已回读核验：" + ("保存成功" if verified else "内容与预期不一致，未保存成功")
+                + f"（{op['op_id']}）"))
+        out.append({"op_id": op["op_id"], "invoice": f"{op['company_id']}/{op['invoice_id']}", "verified": verified})
+    return out
+
+
 def _scrub_runs(conn: sqlite3.Connection, text: str | None, placeholder: str) -> None:
     """删除记忆后，把运行记录里保存的模型输入中的原文一并替换，避免删除的内容留存。"""
     if not text:
@@ -483,12 +538,20 @@ TOOL_SPECS = [
         {"memory_id": {"type": "string"}, "content": {"type": "string"}}, ["memory_id", "content"]),
     _fn("forget_memory", "按用户要求删除一条长期偏好。", {"memory_id": {"type": "string"}}, ["memory_id"]),
 ]
-TOOL_NAMES = {t["function"]["name"] for t in TOOL_SPECS}
+MODEL_RULES_SPECS = [s for s in TOOL_SPECS if s["function"]["name"] not in ("check_purpose", "search_rules", "get_rule")] + [
+    _fn("list_rule_documents", "返回与当前企业相关的全部规则文档（各版本原文与状态），由你自行判断适用哪一版。", {}, [])]
 
 
-def dispatch(box: Toolbox, name: str, raw_args: str | dict) -> dict:
+def tool_specs(variant: str = "baseline") -> list[dict]:
+    return MODEL_RULES_SPECS if variant == "model_rules" else TOOL_SPECS
+
+
+TOOL_NAMES = {t["function"]["name"] for t in TOOL_SPECS + MODEL_RULES_SPECS}
+
+
+def dispatch(box: Toolbox, name: str, raw_args: str | dict, variant: str = "baseline") -> dict:
     """执行一次工具调用，统一返回 {ok, data | error}。参数错误和守卫拒绝都作为结果交还模型。"""
-    if name not in TOOL_NAMES:
+    if name not in {s["function"]["name"] for s in tool_specs(variant)}:
         return {"ok": False, "error": {"code": "UNKNOWN_TOOL", "message": f"没有工具 {name}"}}
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else dict(raw_args)

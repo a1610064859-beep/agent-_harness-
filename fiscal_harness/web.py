@@ -10,8 +10,8 @@ from pydantic import BaseModel
 
 from . import db, harness, knowledge, memory, runlog
 from .llm import LLMError, from_settings
-from .money import fmt
-from .tools import LEVEL_TEXT, _pref_view, _task_view
+from .money import fmt, to_cents
+from .tools import LEVEL_TEXT, ToolError, _pref_view, _task_view, purpose_status, recover_pending
 
 STATIC = Path(__file__).resolve().parent.parent / "web" / "index.html"
 
@@ -25,6 +25,20 @@ class Message(BaseModel):
     text: str
 
 
+class RuleVersion(BaseModel):
+    rule_id: str
+    version: str
+    body: str
+    effective_from: str
+    name: str | None = None
+    companies: list[str] | None = None
+    purpose_required_min: str | None = None  # 元；空表示从正文解析
+
+
+class RuleStatus(BaseModel):
+    status: str
+
+
 class MemoryEdit(BaseModel):
     user_id: str
     company_id: str
@@ -34,6 +48,7 @@ class MemoryEdit(BaseModel):
 def create_app(settings) -> FastAPI:
     app = FastAPI(title="财税 Agent Harness")
     llm = from_settings(settings)
+    recovered = recover_pending(db.connect(settings.db_path))  # 启动时核对中断留下的写入
 
     def conn():
         return db.connect(settings.db_path)
@@ -49,7 +64,7 @@ def create_app(settings) -> FastAPI:
         companies = [dict(r) for r in c.execute("SELECT * FROM companies ORDER BY company_id")]
         perms = {f"{r['user_id']}/{r['company_id']}": LEVEL_TEXT[r["level"]] for r in c.execute("SELECT * FROM permissions")}
         return {"users": users, "companies": companies, "permissions": perms, "model": llm.model,
-                "today": settings.today.isoformat()}
+                "today": settings.today.isoformat(), "recovered_on_start": recovered}
 
     @app.post("/api/sessions")
     def new_session(body: NewSession):
@@ -136,6 +151,52 @@ def create_app(settings) -> FastAPI:
             raise HTTPException(404, "找不到该记忆")
         return {"ok": True}
 
+    @app.get("/api/overview")
+    def overview(user_id: str, company_id: str):
+        """演示页首屏：程序直接计算的月度汇总与 9 月用途检查（不经模型、不改任务记忆）。"""
+        c = conn()
+        level = c.execute("SELECT level FROM permissions WHERE user_id=? AND company_id=?", (user_id, company_id)).fetchone()
+        if not level or level["level"] == "none":
+            return {"forbidden": True}
+        months = []
+        for month in ("2026-07", "2026-08", "2026-09"):
+            inv = c.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_cents),0) s FROM invoices WHERE company_id=? "
+                            "AND substr(issue_date,1,7)=?", (company_id, month)).fetchone()
+            bank = {r["direction"]: r["s"] for r in c.execute(
+                "SELECT direction, SUM(amount_cents) s FROM bank_txns WHERE company_id=? AND substr(txn_date,1,7)=? "
+                "GROUP BY direction", (company_id, month))}
+            months.append({"month": month, "invoice_count": inv["n"], "invoice_total": fmt(inv["s"]),
+                           "bank_income": fmt(bank.get("income", 0)), "bank_expense": fmt(bank.get("expense", 0))})
+        try:
+            status = purpose_status(c, company_id, "2026-09")
+            status.pop("filled")
+        except ToolError as e:
+            status = {"error": e.message}
+        return {"forbidden": False, "months": months, "purpose_2026_09": status}
+
+    @app.post("/api/rules")
+    def add_rule(body: RuleVersion):
+        params = None
+        if body.purpose_required_min not in (None, ""):
+            params = {"purpose_required_min_cents": to_cents(body.purpose_required_min)}
+        try:
+            rule = knowledge.add_version(conn(), body.rule_id.strip().upper(), body.version.strip(), body.body.strip(),
+                                         name=body.name or None, companies=body.companies or None,
+                                         effective_from=body.effective_from, params=params)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(400, str(e))
+        return rule
+
+    @app.post("/api/rules/{rule_id}/{version}/status")
+    def rule_status(rule_id: str, version: str, body: RuleStatus):
+        if body.status not in ("active", "disabled"):
+            raise HTTPException(400, "status 只能是 active 或 disabled")
+        try:
+            knowledge.set_status(conn(), rule_id, version, body.status)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"ok": True}
+
     @app.get("/api/rules")
     def rules(company_id: str):
         c = conn()
@@ -147,6 +208,7 @@ def create_app(settings) -> FastAPI:
                 continue
             out.append({"rule_id": r["rule_id"], "version": r["version"], "name": r["name"], "status": r["status"],
                         "effective_from": r["effective_from"], "body": r["body"].split("\n"),
+                        "params": json.loads(r["params"]),
                         "applicable_today": (r["rule_id"], r["version"]) in resolved})
         return out
 

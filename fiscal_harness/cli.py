@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import sys
 from datetime import date
@@ -11,17 +13,28 @@ from . import db, harness, importer, knowledge, memory, runlog
 from .config import load_settings
 from .llm import LLMError, from_settings
 from .money import fmt
-from .tools import ToolError, Toolbox, _pref_view, _task_view
+from .tools import ToolError, Toolbox, _pref_view, _task_view, recover_pending
 
 
 def _out(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
 
-def _conn(settings):
+def _conn(settings, recover: bool = False):
     if not settings.db_path.exists():
         sys.exit(f"数据库不存在：{settings.db_path}\n请先运行：python -m fiscal_harness init")
-    return db.connect(settings.db_path)
+    conn = db.connect(settings.db_path)
+    if recover:
+        for r in recover_pending(conn):
+            print(f"[恢复] {r['op_id']} {r['invoice']}：中断前的保存已回读核验，结果"
+                  f"{'一致，保存成功' if r['verified'] else '与预期不一致，未保存成功'}")
+    return conn
+
+
+def cmd_recover(args, s):
+    conn = _conn(s)
+    done = recover_pending(conn)
+    print("没有需要核对的中断写入。" if not done else json.dumps(done, ensure_ascii=False, indent=2))
 
 
 # ---------- 初始化 ----------
@@ -41,7 +54,7 @@ HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 
 
 
 def cmd_chat(args, s):
-    conn = _conn(s)
+    conn = _conn(s, recover=True)
     llm = from_settings(s)
     sid = args.session or harness.start_session(conn, args.user, args.company)
     print(f"会话 {sid}｜用户 {args.user}｜企业 {args.company}｜模型 {llm.model}\n{HELP}")
@@ -95,7 +108,7 @@ def cmd_chat(args, s):
 
 
 def cmd_ask(args, s):
-    conn = _conn(s)
+    conn = _conn(s, recover=True)
     llm = from_settings(s)
     sid = args.session or harness.start_session(conn, args.user, args.company)
     res = harness.run_turn(conn, llm, s, sid, args.message)
@@ -177,8 +190,37 @@ def cmd_runs(args, s):
         for r in conn.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (args.limit,)):
             print(f"{r['run_id']}  {r['started_at']}  {r['user_id']}/{r['company_id']}  {r['status']:<10} "
                   f"{r['user_message'][:40]}")
+    elif args.action == "export":
+        ids = list(args.run_id)
+        if args.session:
+            ids += [r["run_id"] for r in conn.execute("SELECT run_id FROM runs WHERE session_id=? ORDER BY started_at",
+                                                      (args.session,))]
+        if args.all:
+            ids += [r["run_id"] for r in conn.execute("SELECT run_id FROM runs ORDER BY started_at")]
+        if not ids:
+            sys.exit("请指定 run_id、--session 或 --all")
+        out = Path(args.out)
+        out.mkdir(parents=True, exist_ok=True)
+        md = io.StringIO()
+        md.write("# 关键运行记录\n\n每条记录的完整模型输入、工具参数与结果见同目录 JSON。数据库中的修改见文末“保存操作”。\n")
+        for rid in dict.fromkeys(ids):
+            run = runlog.load(conn, rid)
+            (out / f"{rid}.json").write_text(json.dumps(run, ensure_ascii=False, indent=1), encoding="utf-8")
+            md.write(f"\n## {rid}\n\n```text\n")
+            with contextlib.redirect_stdout(md):
+                _print_run(run, full=False)
+            md.write("```\n")
+        ops = conn.execute("SELECT * FROM operations ORDER BY created_at").fetchall()
+        md.write("\n## 保存操作（写后回读）\n\n| 操作 | 时间 | 用户 | 发票 | 状态 | 运行 | 修改前 → 后 |\n|---|---|---|---|---|---|---|\n")
+        for o in ops:
+            b, a = json.loads(o["before_json"]), json.loads(o["after_json"] or "{}")
+            md.write(f"| {o['op_id']} | {o['created_at']} | {o['user_id']} | {o['company_id']}/{o['invoice_id']} | "
+                     f"{o['status']} | {o['run_id']} | 用途 {b.get('purpose') or '空'} → {a.get('purpose') or '空'}；"
+                     f"备注 {b.get('remark') or '空'} → {a.get('remark') or '空'} |\n")
+        (out / "README.md").write_text(md.getvalue(), encoding="utf-8")
+        print(f"已导出 {len(dict.fromkeys(ids))} 条运行记录到 {out}")
     else:
-        run = runlog.load(conn, args.run_id)
+        run = runlog.load(conn, args.run_id[0] if args.run_id else "")
         if not run:
             sys.exit(f"没有运行记录 {args.run_id}")
         if args.json:
@@ -296,9 +338,12 @@ def main(argv=None):
     a.add_argument("--content")
     a.set_defaults(func=cmd_memory)
 
-    a = sub.add_parser("runs", help="运行记录：list / show <run_id>")
-    a.add_argument("action", choices=["list", "show"])
-    a.add_argument("run_id", nargs="?")
+    a = sub.add_parser("runs", help="运行记录：list / show <run_id> / export [--session S | --all] --out DIR")
+    a.add_argument("action", choices=["list", "show", "export"])
+    a.add_argument("run_id", nargs="*")
+    a.add_argument("--session")
+    a.add_argument("--all", action="store_true")
+    a.add_argument("--out", default="runs-export")
     a.add_argument("--limit", type=int, default=20)
     a.add_argument("--full", action="store_true")
     a.add_argument("--json", action="store_true")
@@ -309,6 +354,9 @@ def main(argv=None):
     a.add_argument("--company", default="C001")
     a.add_argument("--month")
     a.set_defaults(func=cmd_data)
+
+    a = sub.add_parser("recover", help="核对中断留下的未回读写入")
+    a.set_defaults(func=cmd_recover)
 
     a = sub.add_parser("serve", help="启动演示网页")
     a.add_argument("--host", default="127.0.0.1")

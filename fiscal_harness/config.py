@@ -34,6 +34,7 @@ class Settings:
     llm_effort: str | None
     max_steps: int
     history_chars: int
+    variant: str
     today: date
 
     @property
@@ -54,5 +55,7 @@ def load_settings() -> Settings:
         llm_effort=os.environ.get("LLM_EFFORT") or None,
         max_steps=int(os.environ.get("FH_MAX_STEPS", "8")),
         history_chars=int(os.environ.get("FH_HISTORY_CHARS", "6000")),
+        # 对比实验：baseline=规则由程序解析；model_rules=把全部规则版本原样交给模型自行判断
+        variant=os.environ.get("FH_VARIANT", "baseline"),
         today=date.fromisoformat(today) if today else date.today(),
     )

@@ -71,6 +71,20 @@ table.data th, table.data td { border-bottom: 1px solid var(--line); padding: 4p
 table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .blank { color: var(--warn); }
 .changed { background: var(--ok-soft); }
+.welcome { max-width: 760px; margin: 0 auto 16px; }
+.welcome .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.welcome .scene { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel); }
+.welcome .scene b { display: block; margin-bottom: 6px; }
+.welcome .ask { display: block; width: 100%; text-align: left; margin: 4px 0; font-size: 13px; white-space: normal; }
+.stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.stat { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; background: var(--panel); min-width: 120px; }
+.stat .v { font-size: 16px; font-variant-numeric: tabular-nums; }
+.stat .k { font-size: 12px; color: var(--muted); }
+.banner { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 12px; max-width: 760px; margin: 0 auto 12px; font-size: 13px; }
+form.rule { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 12px; }
+form.rule textarea { grid-column: 1 / -1; height: 70px; }
+form.rule .full { grid-column: 1 / -1; }
+@media (max-width: 700px) { .welcome .grid { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) {
   main { grid-template-columns: 1fr; height: auto; }
   .left, .right { border: 0; border-bottom: 1px solid var(--line); }
@@ -192,7 +206,41 @@ async function newSession() {
   $("#sid").textContent = `会话 ${state.sid}`;
   $("#perm").textContent = `权限：${permText()}`;
   $("#log").innerHTML = `<div class="event">新会话：${state.user} · ${state.company}（任务记忆与长期偏好会延续，未执行的修改不会自动执行）</div>`;
-  await refreshSide();
+  if (state.meta.recovered_on_start?.length && !state.bannerShown) {
+    state.bannerShown = true;
+    $("#log").insertAdjacentHTML("afterbegin", `<div class="banner">启动时核对了上次中断的保存：${state.meta.recovered_on_start.map((r) =>
+      `${esc(r.invoice)} ${r.verified ? "已回读确认保存成功" : "回读不一致，未保存成功"}（${esc(r.op_id)}）`).join("；")}</div>`);
+  }
+  await Promise.all([refreshSide(), renderWelcome()]);
+  showTab("data");
+}
+
+const SCENES = [
+  ["查询资料", ["9 月发票总额、银行收入和支出各多少？", "8 月的银行支出明细给我看看", "7 月的发票总额是多少？"]],
+  ["补充并保存", ["9 月 F002 的用途填打印复印纸，帮我保存", "F004 用途是客户接待住宿，备注写两晚，保存", "把 F002 的金额改成 900"]],
+  ["多轮检查", ["9 月哪些发票还没填用途？", "还剩哪些没处理？", "切到乙企业，看看 9 月还缺哪些用途"]],
+];
+
+async function renderWelcome() {
+  const ov = await api(`/api/overview?user_id=${state.user}&company_id=${state.company}`);
+  const name = state.meta.companies.find((c) => c.company_id === state.company)?.short_name || state.company;
+  let stats = `<p class="muted">${esc(state.user)} 对 ${esc(name)} 无权访问：查询会被拒绝，系统不会把它当作“没有记录”回答 0。</p>`;
+  if (!ov.forbidden) {
+    const sep = ov.months.find((m) => m.month === "2026-09");
+    const ps = ov.purpose_2026_09;
+    stats = `<div class="stats">
+      <div class="stat"><div class="v">${sep.invoice_total}</div><div class="k">9 月发票总额（元）</div></div>
+      <div class="stat"><div class="v">${sep.bank_income}</div><div class="k">9 月银行收入</div></div>
+      <div class="stat"><div class="v">${sep.bank_expense}</div><div class="k">9 月银行支出</div></div>
+      <div class="stat"><div class="v">${ps.error ? "—" : ps.missing_required.length + " 张"}</div><div class="k">${ps.error ? esc(ps.error) : `9 月必填未填用途 · 依据 ${ps.rule.rule_id} ${ps.rule.version} 版`}</div></div>
+    </div><p class="muted" style="font-size:12px;margin:6px 0 0">以上由程序直接从库内当前数据计算，供核对；对话中的数字同样来自工具查询，而不是模型自己计算。</p>`;
+  }
+  const div = document.createElement("div");
+  div.className = "welcome";
+  div.innerHTML = `<div class="card" style="background:var(--panel)"><b>${esc(name)}</b> · ${esc(state.user)}（${esc(permText())}）${stats}
+    <div class="grid">${SCENES.map(([title, qs]) => `<div class="scene"><b>${title}</b>${qs.map((q) => `<button class="ask">${esc(q)}</button>`).join("")}</div>`).join("")}</div></div>`;
+  div.onclick = (e) => { if (e.target.classList.contains("ask")) { $("#input").value = e.target.textContent; $("#input").focus(); } };
+  $("#log").appendChild(div);
 }
 
 function addMsg(role, text, meta) {
@@ -289,9 +337,13 @@ async function showRun(id) {
 }
 
 async function renderData() {
-  const [inv, ops] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`), api(`/api/operations?company_id=${state.company}`)]);
+  const [inv, ops, ov] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`),
+    api(`/api/operations?company_id=${state.company}`), api(`/api/overview?user_id=${state.user}&company_id=${state.company}`)]);
+  const summary = ov.forbidden ? `<p class="muted">${state.user} 无权访问 ${state.company}。</p>` : `<table class="data" style="margin-bottom:14px">
+    <tr><th>月份</th><th>发票</th><th>发票总额</th><th>银行收入</th><th>银行支出</th></tr>${ov.months.map((m) =>
+    `<tr><td>${m.month}</td><td>${m.invoice_count}</td><td class="num">${m.invoice_total}</td><td class="num">${m.bank_income}</td><td class="num">${m.bank_expense}</td></tr>`).join("")}</table>`;
   const months = ["2026-07", "2026-08", "2026-09"].map((m) => `<option ${m === state.month ? "selected" : ""}>${m}</option>`).join("");
-  $("#pane-data").innerHTML = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>${state.company} 发票</b>
+  $("#pane-data").innerHTML = `<h2>${state.company} 月度汇总（程序计算）</h2>${summary}<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>${state.company} 发票</b>
     <select id="month" style="width:auto">${months}</select><span class="muted" style="font-size:12px">库内当前数据（非原始 Excel）</span></div>
     ${inv.length ? `<table class="data"><tr><th>编号</th><th>日期</th><th>金额</th><th>用途</th><th>备注</th><th>版</th></tr>${inv.map((i) =>
       `<tr class="${i.version > 1 ? "changed" : ""}"><td>${i.invoice_id}</td><td>${i.issue_date.slice(5)}</td><td class="num">${i.amount}</td>
@@ -305,12 +357,40 @@ async function renderData() {
 
 async function renderRules() {
   const rules = await api(`/api/rules?company_id=${state.company}`);
-  $("#pane-rules").innerHTML = `<p class="muted" style="font-size:12px">${state.company} 相关规则版本。管理（导入、更新、停用）通过命令行：python -m fiscal_harness rules …</p>` +
+  const ids = [...new Set(rules.map((r) => r.rule_id))];
+  $("#pane-rules").innerHTML = `<h2>新增规则版本（更新 = 新版本，旧版本保留）</h2>
+    <form class="rule" id="ruleForm">
+      <select name="rule_id">${ids.map((i) => `<option>${i}</option>`).join("")}</select>
+      <input name="version" placeholder="版本，如 1.1" required>
+      <input name="effective_from" type="date" value="2026-09-01" required>
+      <input name="purpose_required_min" placeholder="用途必填门槛（元，可空=从正文解析）">
+      <textarea name="body" placeholder="条款原文，如：单张发票金额大于或等于 500.00 元时必须填写用途。" required></textarea>
+      <button class="primary full">新增版本</button>
+      <div class="muted full" id="ruleMsg" style="font-size:12px"></div>
+    </form>
+    <h2>${state.company} 相关规则版本</h2>` +
     rules.map((r) => `<div class="card"><div><b>${r.rule_id}</b>《${esc(r.name)}》${r.version} 版
       <span class="chip ${r.status === "active" ? "ok" : "bad"}">${r.status === "active" ? "启用" : "已停用"}</span>
-      ${r.applicable_today ? '<span class="chip">今日适用</span>' : ""}</div>
-      <div class="muted" style="font-size:12px">生效 ${r.effective_from}</div>
-      <details><summary class="muted">条款</summary>${r.body.map((b, i) => `<div style="font-size:13px;margin-top:4px">[${i + 1}] ${esc(b)}</div>`).join("")}</details></div>`).join("");
+      ${r.applicable_today ? '<span class="chip">今日适用</span>' : ""}
+      <button style="float:right;font-size:12px;padding:0 8px" data-rid="${r.rule_id}" data-ver="${r.version}" data-st="${r.status === "active" ? "disabled" : "active"}">${r.status === "active" ? "停用" : "启用"}</button></div>
+      <div class="muted" style="font-size:12px">生效 ${r.effective_from}${r.params.purpose_required_min_cents === undefined ? "" : r.params.purpose_required_min_cents === 0 ? " · 用途：每张必填" : ` · 用途必填门槛 ${(r.params.purpose_required_min_cents / 100).toFixed(2)} 元（含）`}</div>
+      <details><summary class="muted">条款</summary>${r.body.map((b, i) => `<div style="font-size:13px;margin-top:4px">[${i + 1}] ${esc(b)}</div>`).join("")}</details></div>`).join("") +
+    `<p class="muted" style="font-size:12px">也可用命令行管理：python -m fiscal_harness rules list / import / update / disable</p>`;
+  $("#pane-rules").onclick = async (e) => {
+    const b = e.target.closest("button[data-rid]"); if (!b) return;
+    if (!confirm(`${b.dataset.st === "disabled" ? "停用" : "启用"} ${b.dataset.rid} ${b.dataset.ver} 版？`)) return;
+    await api(`/api/rules/${b.dataset.rid}/${b.dataset.ver}/status`, { method: "POST", body: JSON.stringify({ status: b.dataset.st }) });
+    renderRules();
+  };
+  $("#ruleForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    try {
+      const r = await api("/api/rules", { method: "POST", body: JSON.stringify(f) });
+      $("#ruleMsg").textContent = `已新增 ${r.rule_id} ${r.version} 版，生效 ${r.effective_from}`;
+      setTimeout(renderRules, 800);
+    } catch (err) { $("#ruleMsg").textContent = "失败：" + err.message; }
+  };
 }
 
 init().catch((e) => { $("#log").innerHTML = `<div class="event" style="color:var(--bad)">初始化失败：${esc(e.message)}</div>`; });
