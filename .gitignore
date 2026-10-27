@@ -17,5 +17,8 @@ dist/
 !evals/results/20261026-091716/
 !evals/results/20261027-052537/
 !evals/results/20261027-052639/
+!evals/results/20261027-082932/
 /data/external/
 /test-invoices/
+/blobs/
+.mineru-service.lock

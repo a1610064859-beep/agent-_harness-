@@ -50,10 +50,21 @@ class Scope:
 
 # 用户在来源原话里明确表示暂不保存：守卫只用来拒绝写入，不用来判断意图或放行
 SAVE_NEGATION = re.compile(r"(别|不要|不用|不必|勿|先不|暂不|暂时不|还不)(急着?)?(保存|写入|提交)")
+FIELD_LABELS = {"purpose": "用途", "remark": "备注"}
+# 两个点名或两个字段名之间只隔这些词时视为同一组（_norm 已去掉顿号、逗号等标点）
+CONNECTIVE = re.compile(r"(和|与|及|以及|跟|还有|的)*")
+
+
+PUNCT = r"[\s\"'“”‘’「」『』《》:：,，.。!！?？;；、]"
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"[\s\"'“”‘’「」『』《》:：,，.。!！?？;；、]", "", text or "")
+    return re.sub(PUNCT, "", text or "")
+
+
+def _spaced(text: str) -> str:
+    """标点换成空格而不是删掉，免得“F002、F003”连成“F002F003”而认不出编号。"""
+    return re.sub(PUNCT, " ", text or "")
 
 
 def _month_bounds(month: str) -> tuple[str, str]:
@@ -123,11 +134,75 @@ class Toolbox:
     def _session_user_texts(self) -> list[str]:
         return [r["content"] for r in self._scope_user_messages()]
 
-    def _named_invoices(self, text: str) -> set[str]:
-        norm = _norm(text).upper()
+    def _mentions(self, text: str) -> tuple[list[tuple[int, int, str]], dict[str, list[str]]]:
+        """原话（_spaced 后）中点名的发票：[(起, 止, 发票编号)]，以及有歧义的旧版短号码 {号码: [候选编号]}。
+        编号必须完整出现、前后不紧挨字母数字；旧版发票只说号码时，当前企业中唯一才算点名。"""
+        norm = _spaced(text)
         ids = [r["invoice_id"] for r in self.conn.execute("SELECT invoice_id FROM invoices WHERE company_id=?",
                                                           (self.scope.company_id,))]
-        return {i for i in ids if i in norm or ("-" in i and i.split("-", 1)[1] in norm)}
+
+        def find(token):
+            return re.finditer(rf"(?<![0-9A-Za-z]){re.escape(token)}(?![0-9A-Za-z])", norm, re.I)
+
+        spans: list[tuple[int, int, str]] = []
+
+        def free(m):
+            return not any(s < m.end() and m.start() < e for s, e, _ in spans)
+
+        for i in sorted(ids, key=len, reverse=True):
+            spans += [(m.start(), m.end(), i) for m in find(i) if free(m)]
+        by_no: dict[str, list[str]] = {}
+        for i in ids:
+            if "-" in i:
+                by_no.setdefault(i.split("-", 1)[1], []).append(i)
+        ambiguous = {}
+        for no, candidates in by_no.items():
+            for m in [m for m in find(no) if free(m)]:
+                if len(candidates) == 1:
+                    spans.append((m.start(), m.end(), candidates[0]))
+                else:
+                    ambiguous[no] = sorted(candidates)
+        return sorted(spans), ambiguous
+
+    def _named_invoices(self, text: str) -> set[str]:
+        return {i for _, _, i in self._mentions(text)[0]}
+
+    def _value_bound(self, text: str, invoice_id: str, field_name: str, value: str) -> bool:
+        """值是否在原话里明确给了这张发票的这个字段。
+
+        原话按点名的发票切段（“F002和F003”这类只隔连接词的点名合为一段）；段内取值前最近的字段名
+        （“用途和备注”合为一组）。值前没有字段名时按用途理解，如“F004是出差住宿”。没点名发票的原话
+        （如“就填X，保存”）对象取自之前的点名，整句都算。只用于拒绝，不据此决定写入。"""
+        norm, spans = _spaced(text), self._mentions(text)[0]
+        groups: list[list] = []
+        for s, e, i in spans:
+            if groups and CONNECTIVE.fullmatch(_norm(norm[groups[-1][2]:s])):
+                groups[-1][0].add(i)
+                groups[-1][2] = e
+            else:
+                groups.append([{i}, s, e])
+        if not groups:
+            segments = [_norm(norm)]
+        else:
+            bounds = [g[1] for g in groups] + [len(norm)]
+            if len(groups) == 1:
+                bounds[0] = 0  # 只点名了一组发票时，点名之前的话也算这一组的
+            segments = [_norm(norm[bounds[k]:bounds[k + 1]]) for k, g in enumerate(groups) if invoice_id in g[0]]
+        v = _norm(value)
+        for seg in segments:
+            labels: list[list] = []
+            for s, e, f in sorted((m.start(), m.end(), f) for f, lab in FIELD_LABELS.items()
+                                  for m in re.finditer(lab, seg)):
+                if labels and CONNECTIVE.fullmatch(seg[labels[-1][2]:s]):
+                    labels[-1][0].add(f)
+                    labels[-1][2] = e
+                else:
+                    labels.append([{f}, s, e])
+            for m in re.finditer(re.escape(v), seg):
+                before = [g for g in labels if g[2] <= m.start()]
+                if field_name in (before[-1][0] if before else {"purpose"}):
+                    return True
+        return False
 
     def _authorize_write(self, invoice_id: str, user_quote: str, changes: dict) -> int:
         """修改授权绑定到当前企业、发票、字段值和一条来源原话；返回来源消息 id。"""
@@ -148,14 +223,24 @@ class Toolbox:
                 basis.append(earlier[-1])
                 named = self._named_invoices(earlier[-1]["content"])
         if invoice_id not in named:
+            for m in basis:
+                for no, candidates in self._mentions(m["content"])[1].items():
+                    if invoice_id in candidates:
+                        raise ToolError("INVOICE_AMBIGUOUS", f"用户只说了号码 {no}，当前企业有 {len(candidates)} 张同号码的"
+                                                             f"旧版发票：{'、'.join(candidates)}。请向用户确认发票代码。",
+                                        candidates=candidates)
             raise ToolError("INVOICE_NOT_REQUESTED", f"用户原话要求修改的是 {'、'.join(sorted(named)) or '（未点名发票）'}，"
                                                      f"不是 {invoice_id}。请按用户点名的发票操作，或向用户确认。",
                             named_invoices=sorted(named))
         text = _norm("".join(m["content"] for m in basis))
         for k, v in changes.items():
+            label = FIELD_LABELS[k]
             if _norm(v) not in text:
-                raise ToolError("CONTENT_NOT_FROM_USER", f"{'用途' if k == 'purpose' else '备注'}“{v}”没有出现在用户"
-                                                         "要求修改的原话中。请使用用户给出的原文，不能根据销售方或项目名称补写。")
+                raise ToolError("CONTENT_NOT_FROM_USER", f"{label}“{v}”没有出现在用户要求修改的原话中。"
+                                                         "请使用用户给出的原文，不能根据销售方或项目名称补写。")
+            if not any(self._value_bound(m["content"], invoice_id, k, v) for m in basis):
+                raise ToolError("VALUE_NOT_FOR_TARGET", f"用户原话里的“{v}”不是给 {invoice_id} 的{label}的（可能属于另一张"
+                                                        "发票或另一个字段）。请按原话逐张、逐字段对应；对应不清时向用户确认。")
         return src["id"]
 
     def _check_month(self, month: str) -> str:

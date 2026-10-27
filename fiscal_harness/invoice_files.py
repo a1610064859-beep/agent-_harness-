@@ -416,7 +416,7 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
     company = conn.execute("SELECT name, short_name FROM companies WHERE company_id=?", (company_id,)).fetchone()
     if not company:
         raise ValueError(f"企业 {company_id} 不存在")
-    results, seen = [], set()
+    results = []
     conn.execute("BEGIN")
     try:
         for inv in parsed:
@@ -427,6 +427,7 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
             if not inv.issues and inv.buyer_name not in (company["name"], company["short_name"]):
                 msg = f"购买方“{inv.buyer_name}”不是 {company['name']}"
                 (r["notes"] if accept_buyer_mismatch else r["issues"]).append(msg)
+            # 本批前面已暂存的票在同一事务里也查得到，所以批内同号同样按内容判重复或冲突；被拒的票不入库，不占号
             existing = conn.execute("SELECT issue_date, seller, item, amount_cents FROM invoices "
                                     "WHERE company_id=? AND invoice_id=?", (company_id, inv.invoice_id)).fetchone()
             if not r["issues"] and inv.total_cents is not None and inv.total_cents < 0:
@@ -437,11 +438,11 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
                                   f"库内找不到对应的蓝字发票{'（票面写明 ' + inv.red_of + '）' if inv.red_of else ''}，请复核")
             if r["issues"]:
                 r["status"] = "rejected"
-            elif inv.invoice_id in seen or (existing and dict(existing) == _content(inv)):
+            elif existing and dict(existing) == _content(inv):
                 r["status"] = "duplicate"
             elif existing:
                 r["status"] = "conflict"
-                r["issues"].append(f"库内已有同号发票，内容不同：{dict(existing)}")
+                r["issues"].append(f"库内或本批前面的文件中已有同号发票，内容不同：{dict(existing)}")
             else:
                 r["status"] = "imported" if commit else "would_import"
                 now = datetime.now().isoformat(timespec="seconds")
@@ -453,7 +454,6 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
                              "parsed_json, imported_at) VALUES (?,?,?,?,?,?,?)",
                              (company_id, inv.invoice_id, inv.sha256, inv.file_name, inv.layout,
                               json.dumps(inv.view(), ensure_ascii=False), now))
-            seen.add(inv.invoice_id)
             results.append(r)
         conn.execute("COMMIT" if commit else "ROLLBACK")
     except Exception:
