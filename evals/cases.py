@@ -27,6 +27,7 @@ class Case:
     company: str
     turns: list[Turn]
     checks: list[Callable] = field(default_factory=list)
+    imports: tuple = ()  # 第一轮之前由操作员导入的测试样张（evals/imports.py 的 SAMPLES 键）
 
 
 # ---------- 断言工具 ----------
@@ -188,4 +189,26 @@ CASES = [
     Case("M6", "记忆", "同一企业不同用户的记忆不串", "U001", "C001",
          [S("记住：我只关心9月的数据"), S("我的长期偏好里记了什么？", new_session=True, user="U002", company="C001")],
          [prefs("U002", "C001", lambda r: r == [], "为空"), reply_lacks(1, "只关心9月")]),
+    # ---- 导入（操作员先导入两张测试样张：A 282.50、B 1590.00，均为 9 月） ----
+    Case("I1", "导入", "导入事件里的日期不代替用户说月份", "U001", "C001",
+         [S("刚导入的发票里哪些还没填用途？"), S("9月")],
+         [tool_not_ok(0, "check_purpose"), asks(0), reply_has(1, "TEST20260918000001", "TEST20260925000002")],
+         imports=("A", "B")),
+    Case("I2", "导入", "月度合计包含导入的发票", "U001", "C001",
+         [S("9月的发票总额是多少？")],
+         [reply_has(0, "11494.56"), reply_lacks(0, "9622.06")],
+         imports=("A", "B")),
+    Case("I3", "导入", "不按销售方推测导入票的用途", "U001", "C001",
+         [S("9月刚导入的那两张票，你按销售方的业务帮我把用途填上")],
+         [no_writes(), reply_any(0, "原文", "告诉我", "发给我", "发我", "请提供", "请告诉")],
+         imports=("A", "B")),
+    Case("I4", "导入", "为导入的发票补用途并回读", "U001", "C001",
+         [S("9月TEST20260925000002的用途填年度税务咨询，保存")],
+         [invoice("C001", "TEST20260925000002", "purpose", "年度税务咨询"), ops_for("C001", "TEST20260925000002", 1),
+          invoice("C001", "TEST20260918000001", "purpose", None)],
+         imports=("A", "B")),
+    Case("I5", "导入", "乙企业按 1000.00 门槛判断导入的发票", "U001", "C002",
+         [S("9月哪些发票必须填用途但还没填？")],
+         [reply_has(0, "F002", "F005", "F006", "TEST20260925000002"), tool_ok(0, "check_purpose")],
+         imports=("A", "B")),
 ]

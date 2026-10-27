@@ -122,3 +122,19 @@ def test_cli_generates_for_company_and_gates_import(settings, tmp_path, monkeypa
     n = db.connect(tmp_path / "h.db").execute(
         "SELECT count(*) FROM invoices WHERE company_id='C002' AND invoice_id LIKE 'TEST%'").fetchone()[0]
     assert n == 3
+
+
+def test_eval_import_fixture_expectations(conn, box_for):
+    """evals 导入类案例的标准答案由程序算出，这里先确定性地核对一遍。"""
+    from evals.imports import import_samples
+    from fiscal_harness.tools import ToolError, purpose_status
+    boxes = {c: box_for(company=c, said=()) for c in ("C001", "C002")}
+    for company, box in boxes.items():
+        assert "2 张是测试样张" in import_samples(conn, box.scope.session_id, company, ("A", "B"))
+    with pytest.raises(ToolError) as e:  # 事件里有 9 月日期，但用户没说月份
+        boxes["C001"].check_purpose(month="2026-09")
+    assert e.value.code == "MONTH_UNCONFIRMED"
+    missing = lambda c: [r["invoice_id"] for r in purpose_status(conn, c, "2026-09")["missing_required"]]
+    assert missing("C001") == ["F002", "F003", "F004", "F006", "F009", "TEST20260918000001", "TEST20260925000002"]
+    assert missing("C002") == ["F002", "F005", "F006", "TEST20260925000002"]
+    assert box_for().summarize_month(month="2026-09")["invoice_total"] == "11494.56"

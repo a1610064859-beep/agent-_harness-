@@ -19,6 +19,7 @@ from fiscal_harness.config import ROOT, load_settings
 from fiscal_harness.llm import from_settings
 
 from .cases import CASES, Case
+from .imports import import_samples
 
 
 @dataclass
@@ -44,6 +45,8 @@ def run_case(case: Case, settings, llm, attempt: int) -> dict:
                     company = t.company or conn.execute("SELECT company_id FROM sessions WHERE session_id=?",
                                                         (sid,)).fetchone()[0]
                 sid = harness.start_session(conn, user, company)
+                if case.imports and len(replies) == 0:
+                    import_samples(conn, sid, company, case.imports)
             r = harness.run_turn(conn, llm, settings, sid, t.text)
             u = runlog.load(conn, r.run_id)["usage"]
             for k in usage:

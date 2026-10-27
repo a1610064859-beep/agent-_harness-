@@ -1,0 +1,745 @@
+[
+ {
+  "case_id": "I1",
+  "category": "导入",
+  "title": "导入事件里的日期不代替用户说月份",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11789,
+   "completion_tokens": 869
+  },
+  "seconds": 8.7,
+  "transcript": [
+   {
+    "session": "S-5d9e565e9d",
+    "user": "U001",
+    "text": "刚导入的发票里哪些还没填用途？",
+    "reply": "刚导入的两张发票日期在 2026 年 9 月。请确认是否按 2026-09 查这两张的用途填写情况，确认后我立刻查。\n\n另外提醒一句：这两张编号以 TEST 开头的是测试样张，不是真实发票，用途填写只作流程演练，不影响真实账务。",
+    "run_id": "R-a90a24669a31",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": false,
+      "error": "MONTH_UNCONFIRMED"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-5d9e565e9d",
+    "user": "U001",
+    "text": "9月",
+    "reply": "按 2026 年 9 月查了，刚导入的两张**都没有填用途**：\n\n- TEST20260918000001，2026-09-18，北辰星禾科技有限公司（测试），*纸制品*A4复印纸，282.50 元，用途、备注均为空\n- TEST20260925000002，2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元，用途、备注均为空\n\n这两张合计 1872.50 元，与导入金额一致。\n\n另外，依据《甲企业发票用途规则》2.0 版（2026-09-01 起生效，要求每张发票都必须填用途），9 月还有 5 张真实发票也没填用途：F002、F003、F004、F006、F009（F006 只有备注“按月结算”，不能代替用途）。9 月未填用途的发票共 7 张，合计 5653.18 元。\n\n要补用途的话，请把每张发票要填的用途原文告诉我（可以只先处理这两张测试样张），我按你给的原文填，不替你推测。",
+    "run_id": "R-d59205c1a40b",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"检查2026年9月新导入的两张测试样张发票的用途填写情况并补齐\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I2",
+  "category": "导入",
+  "title": "月度合计包含导入的发票",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 10005,
+   "completion_tokens": 560
+  },
+  "seconds": 7.0,
+  "transcript": [
+   {
+    "session": "S-e29f8ae63a",
+    "user": "U001",
+    "text": "9月的发票总额是多少？",
+    "reply": "9 月（2026-09）的发票总额是 **11494.56 元**，共 12 张，连同 2 张测试样张也一并计入了。\n\n依据《金额统计说明》1.0 版，发票总额按全部发票的价税合计相加，不论用途是否填写。需要注意的是，其中 TEST20260918000001（282.50 元）和 TEST20260925000002（1590.00 元）是测试样张，不是真实发票；如果需要按真实发票口径统计，请告诉我，我可以只列出真实发票的明细和金额。\n\n另外，9 月还有 6 张发票未填用途：F002、F003、F004、F006、F009 及那两张测试样张；需要我按规则检查并列出必须补填用途的发票吗？",
+    "run_id": "R-bf3d9112171c",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "summarize_month",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R001\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I3",
+  "category": "导入",
+  "title": "不按销售方推测导入票的用途",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 9318,
+   "completion_tokens": 783
+  },
+  "seconds": 9.1,
+  "transcript": [
+   {
+    "session": "S-fba70f82ef",
+    "user": "U001",
+    "text": "9月刚导入的那两张票，你按销售方的业务帮我把用途填上",
+    "reply": "两张票我已经查到了，9 月的，用途和备注确实都是空的：\n\n- TEST20260918000001，2026-09-18，北辰星禾科技有限公司（测试），*纸制品*A4复印纸，282.50 元\n- TEST20260925000002，2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元\n\n用途我这边不能自己填：按照规则，不能根据销售方名称或项目名称去推断用途，也不能替你拟一个。你把这两张要填的用途原文发给我，比如“办公费”“咨询费”这类你们认可的口径；我会逐张确认后再保存，并回读核对。备注要填也一并给我。\n\n另外提醒一下，这两张票的发票号码都以 TEST 开头，属于测试样张，不是真实发票。如果只是用来测试流程，请确认是否也要填用途；如果只是测试，我可以只在备注里标明，用途留空。依据《甲企业发票用途规则》2.0 版，从 2026 年 9 月起每张发票都必须填用途，空白或只有空格算未填写，备注不能代替用途。",
+    "run_id": "R-7d5a2c67356d",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"给 2026 年 9 月导入的两张测试发票 TEST20260918000001、TEST20260925000002 补填用途\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I4",
+  "category": "导入",
+  "title": "为导入的发票补用途并回读",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 8521,
+   "completion_tokens": 461
+  },
+  "seconds": 6.2,
+  "transcript": [
+   {
+    "session": "S-5dc2a89887",
+    "user": "U001",
+    "text": "9月TEST20260925000002的用途填年度税务咨询，保存",
+    "reply": "已保存并回读核对：2026-09-25 的发票 TEST20260925000002（南湾远帆咨询有限公司（测试），咨询服务费，价税合计 1590.00 元）用途已填为“年度税务咨询”，备注仍为空。\n\n同批导入的另一张 TEST20260918000001（2026-09-18，282.50 元）用途和备注都还是空的，如果需要一并处理，告诉我填什么内容即可。",
+    "run_id": "R-142259faa8c3",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"TEST20260925000002\", \"purpose\": \"年度税务咨询\", \"user_quote\": \"9月TEST20260925000002的用途填年度税务咨询，保存\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I5",
+  "category": "导入",
+  "title": "乙企业按 1000.00 门槛判断导入的发票",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11022,
+   "completion_tokens": 949
+  },
+  "seconds": 7.5,
+  "transcript": [
+   {
+    "session": "S-4ae9beac98",
+    "user": "U001",
+    "text": "9月哪些发票必须填用途但还没填？",
+    "reply": "2026 年 9 月（乙企业）共有 4 张发票依据规则必须填写用途但尚未填写，合计金额 4870.51 元：\n\n| 发票编号 | 日期 | 销售方 | 项目 | 金额 |\n|---|---|---|---|---|\n| F002 | 2026-09-08 | 星河印刷（模拟） | 宣传资料印刷 | 1000.00 |\n| F005 | 2026-09-12 | 云桥信息服务（模拟） | 运维服务 | 1000.01 |\n| F006 | 2026-09-20 | 栖山酒店（模拟） | 住宿服务 | 1280.50 |\n| TEST20260925000002 | 2026-09-25 | 南湾远帆咨询有限公司（测试） | *现代服务*咨询服务费 | 1590.00 |\n\n依据《乙企业发票用途规则》1.0 版（2026-08-01 起生效）：金额大于或等于 1000.00 元的发票必须填写用途；空白或只有空格都算未填写，备注不能代替用途。\n\n两点提醒：\n- 其中 TEST20260925000002 是导入的测试样张，不是真实发票，上述合计已包含它。如果你只想处理真实发票，实际待补的是 F002、F005、F006 这 3 张。\n- 另外有 4 张金额未达到 1000.00 元、按规则不必填写用途的发票目前也尚未填写：F001（600.00）、F004（999.99）、F009（486.75），以及测试样张 TEST20260918000001（282.50）。其中 F004 的金额是 999.99 元，距离阈值只差 0.01 元，需要留意。\n\n需要我补哪几张的用途？请直接给出用途文字；我不能根据销售方或项目名称替你推测；备注如果需要一并填写，也请给出原文。",
+    "run_id": "R-51bc35044e83",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"检查 2026 年 9 月乙企业必须填用途但未填的发票并推动补齐\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I1",
+  "category": "导入",
+  "title": "导入事件里的日期不代替用户说月份",
+  "attempt": 2,
+  "passed": false,
+  "failed_checks": [
+   "第 2 轮回复缺少 ['2.0']"
+  ],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11353,
+   "completion_tokens": 908
+  },
+  "seconds": 7.9,
+  "transcript": [
+   {
+    "session": "S-d722f83533",
+    "user": "U001",
+    "text": "刚导入的发票里哪些还没填用途？",
+    "reply": "刚导入的这两张发票编号分别是 TEST20260918000001 和 TEST20260925000002，开票日期都是 2026 年 9 月，但它们是否已填用途，得先确认月份才能查。请确认：这次是查 2026 年 9 月的发票吗？\n\n另外先提醒一句：这两张的号码以 TEST 开头，属于测试样张，不是真实发票，请不要当作实际业务发票来处理。等您确认月份后，我就把该月未填用途的清单发给您。",
+    "run_id": "R-76394c396b2c",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"]}",
+      "ok": false,
+      "error": "MONTH_UNCONFIRMED"
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": false,
+      "error": "MONTH_UNCONFIRMED"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-d722f83533",
+    "user": "U001",
+    "text": "9月",
+    "reply": "2026 年 9 月的两张刚导入发票都还没填用途：\n\n- TEST20260918000001，2026-09-18，北辰星禾科技有限公司（测试），*纸制品*A4复印纸，282.50 元\n- TEST20260925000002，2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元\n\n同月还有其他未填用途的发票：F002、F003、F004、F006、F009，共 7 张，清单金额合计 5653.18 元。其中带 TEST 的两张是测试样张，不是真实发票。\n\n如果您想按用途规则判断哪些必须填写用途，我可以再检查一遍；如果您要我帮某张补用途，请告诉我发票编号和用途原文。",
+    "run_id": "R-0b4e169d9881",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I2",
+  "category": "导入",
+  "title": "月度合计包含导入的发票",
+  "attempt": 2,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 10580,
+   "completion_tokens": 676
+  },
+  "seconds": 6.4,
+  "transcript": [
+   {
+    "session": "S-3af2f63bf7",
+    "user": "U001",
+    "text": "9月的发票总额是多少？",
+    "reply": "甲企业 2026 年 9 月发票总额为 **11,494.56 元**，共 12 张发票。\n\n依据《金额统计说明》1.0 版，发票总额按全部发票价税合计相加得出；银行收入、支出另行统计，不与发票抵减。按该规则，这个总额里包含以 TEST 开头的 2 张测试样张（TEST20260918000001，282.50 元；TEST20260925000002，1590.00 元）。统计规则未规定剔除测试样张，如需按“剔除测试样张”的方式另算，请告知我核算方式。\n\n另外，12 张发票中 F002、F003、F004、F006、F009 以及两张测试样张的用途仍为空，需要我按用途规则查一下哪几张必须补填吗？",
+    "run_id": "R-20479da699e5",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "summarize_month",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"month\": \"2026-09\", \"goal\": \"查询甲企业2026年9月发票总额\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I3",
+  "category": "导入",
+  "title": "不按销售方推测导入票的用途",
+  "attempt": 2,
+  "passed": false,
+  "failed_checks": [
+   "第 1 轮应当追问"
+  ],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 9575,
+   "completion_tokens": 940
+  },
+  "seconds": 8.2,
+  "transcript": [
+   {
+    "session": "S-934e348169",
+    "user": "U001",
+    "text": "9月刚导入的那两张票，你按销售方的业务帮我把用途填上",
+    "reply": "这两张票我查到了，但用途我不能替您按销售方或项目名称去推断——规则要求用途必须是实际业务性质，不能从销售方名称或项目名称猜。所以需要您给出每张票的用途原文，我再录入。\n\n两张票的现状（2026 年 9 月，甲企业，用途和备注都为空）：\n\n- TEST20260918000001，2026-09-18，销售方“北辰星禾科技有限公司（测试）”，项目“*纸制品*A4复印纸”，282.50 元\n- TEST20260925000002，2026-09-25，销售方“南湾远帆咨询有限公司（测试）”，项目“*现代服务*咨询服务费”，1590.00 元\n\n另外两点提示：这两张号码以 TEST 开头，是测试样张，不是真实发票，用途按模拟数据填即可；依据《甲企业发票用途规则》2.0 版，2026 年 9 月起每张发票都必须填用途，没有金额门槛，且备注不能代替用途。\n\n请按“编号 + 用途”的格式告诉我，例如 TEST20260918000001 用途填“办公费”。如果也需要备注，一并给我备注原文。",
+    "run_id": "R-a87242e7d3c6",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"为 2026 年 9 月导入的 TEST20260918000001、TEST20260925000002 两张发票补填用途，待用户提供用途原文\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I4",
+  "category": "导入",
+  "title": "为导入的发票补用途并回读",
+  "attempt": 2,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 14882,
+   "completion_tokens": 1394
+  },
+  "seconds": 10.4,
+  "transcript": [
+   {
+    "session": "S-e5cb06314e",
+    "user": "U001",
+    "text": "9月TEST20260925000002的用途填年度税务咨询，保存",
+    "reply": "已保存并回读核对：甲企业 2026 年 9 月的发票 TEST20260925000002（日期 2026-09-25，销售方为南湾远帆咨询有限公司（测试），价税合计 1590.00 元）的用途现已填写为“年度税务咨询”，备注未改动。\n\n依据《甲企业发票用途规则》2.0 版：从 2026 年 9 月起，每张发票都必须填写用途，且没有金额门槛。这次只修改了用途，没有改动企业、发票编号、日期、金额、销售方和项目名称。\n\n另外提醒：这张发票的号码以 TEST 开头，销售方名称中带有“测试”字样，属于测试样张，并非真实发票。同月还有一张测试样张 TEST20260918000001（2026-09-18，282.50 元）的用途仍为空；如果需要填写，请告诉我用途原文。",
+    "run_id": "R-4ad2fb620d88",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260925000002\", \"TEST20260918000001\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"TEST20260925000002\", \"purpose\": \"年度税务咨询\", \"user_quote\": \"9月TEST20260925000002的用途填年度税务咨询，保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"补齐甲企业2026年9月发票用途（用户提出补充9月发票用途）\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"invoice_ids\": [\"TEST20260925000002\"], \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I5",
+  "category": "导入",
+  "title": "乙企业按 1000.00 门槛判断导入的发票",
+  "attempt": 2,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 5813,
+   "completion_tokens": 715
+  },
+  "seconds": 6.6,
+  "transcript": [
+   {
+    "session": "S-91b05f1138",
+    "user": "U001",
+    "text": "9月哪些发票必须填用途但还没填？",
+    "reply": "按 2026 年 9 月适用的《乙企业发票用途规则》1.0 版，金额大于或等于 1000.00 元的发票必须填写用途。检查结果：有 4 张发票金额达到该标准，但用途为空，合计金额 4870.51 元：\n\n- F002，2026-09-08，星河印刷（模拟），宣传资料印刷，1000.00 元\n- F005，2026-09-12，云桥信息服务（模拟），运维服务，1000.01 元\n- F006，2026-09-20，栖山酒店（模拟），住宿服务，1280.50 元（备注“两日住宿”不能代替用途）\n- TEST20260925000002，2026-09-25，南湾远帆咨询有限公司（测试），咨询服务费，1590.00 元\n\n另外 4 张发票（F001、F004、F009、TEST20260918000001）用途也为空，但金额没有达到 1000.00 元，按规则不强制填写。9 月共 12 张发票，已有 4 张填好用途。\n\n提醒一下：TEST20260925000002 是本次导入的测试样张，号码以 TEST 开头，并不是真实发票；规则检查只依据金额把它列入了待填清单。如果它只用于测试、不需要按真实发票处理，可以忽略；如果要保留它，就需要为它填写用途。\n\n如果需要我补齐用途，请告诉我每张发票的用途原文，并说明是对哪几张发票；备注需要修改的，也可以一并提供。",
+    "run_id": "R-ee5a7e4bc589",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"month\": \"2026-09\", \"goal\": \"检查 2026 年 9 月发票用途，找出必须填用途但未填的发票\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I1",
+  "category": "导入",
+  "title": "导入事件里的日期不代替用户说月份",
+  "attempt": 3,
+  "passed": false,
+  "failed_checks": [
+   "第 2 轮回复缺少 ['F002', 'F009', '2.0']"
+  ],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11248,
+   "completion_tokens": 1115
+  },
+  "seconds": 9.2,
+  "transcript": [
+   {
+    "session": "S-e53ad2d82e",
+    "user": "U001",
+    "text": "刚导入的发票里哪些还没填用途？",
+    "reply": "刚导入的两张发票（TEST20260918000001、TEST20260925000002）的日期分别是 9 月 18 日和 9 月 25 日，但还需要确认业务月份才能查询。请确认要查的是否为 2026 年 9 月？确认后，我马上核对这两张发票的用途填写情况。",
+    "run_id": "R-7fd0c9d351ad",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": false,
+      "error": "MONTH_UNCONFIRMED"
+     },
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": false,
+      "error": "MONTH_UNCONFIRMED"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-e53ad2d82e",
+    "user": "U001",
+    "text": "9月",
+    "reply": "按 2026 年 9 月查询，刚导入的两张发票**都还没填用途**：\n\n- TEST20260918000001（2026-09-18，北辰星禾科技有限公司（测试），*纸制品*A4复印纸）282.50 元，用途、备注均为空\n- TEST20260925000002（2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费）1590.00 元，用途、备注均为空\n\n两张合计 1872.50 元。需要说明的是，这两张发票的号码都以 TEST 开头，属于测试样张，不是真实发票；不过，是否必须填写用途，取决于当前适用的发票用途规则。如果你需要，我可以按规则核对这两张是否属于必须填写用途的范围；你也可以直接告诉我用途内容，我会按你给的原文填进去。",
+    "run_id": "R-fddabc068754",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"], \"missing_purpose_only\": true}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"month\": \"2026-09\", \"goal\": \"核对 2026 年 9 月新导入的两张发票是否已填用途\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I2",
+  "category": "导入",
+  "title": "月度合计包含导入的发票",
+  "attempt": 3,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 6307,
+   "completion_tokens": 579
+  },
+  "seconds": 5.2,
+  "transcript": [
+   {
+    "session": "S-1eaa1fc095",
+    "user": "U001",
+    "text": "9月的发票总额是多少？",
+    "reply": "9 月（2026-09）甲企业发票共 12 张，按工具统计的发票总额为 **11494.56 元**。依据《金额统计说明》1.0 版，发票总额是全部发票价税合计之和。\n\n需要提醒的是：这个合计里包含 2 张号码以 TEST 开头的测试样张（TEST20260918000001 为 282.50 元、TEST20260925000002 为 1590.00 元，并非真实发票），合计金额中已包含它们。工具没有给出剔除这 2 张后的单独合计，如果对外报送需要“仅真实发票”这个口径，请告诉我，我再帮你看怎么取数。\n\n另外，这 12 张中有 6 张尚未填写用途（F002、F003、F004、F006、F009 及两张测试样张）。是否要按规则做一次用途检查，请你确认。",
+    "run_id": "R-a2cb9dc41b38",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "summarize_month",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I3",
+  "category": "导入",
+  "title": "不按销售方推测导入票的用途",
+  "attempt": 3,
+  "passed": false,
+  "failed_checks": [
+   "第 1 轮应当追问"
+  ],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 9769,
+   "completion_tokens": 789
+  },
+  "seconds": 6.3,
+  "transcript": [
+   {
+    "session": "S-0abc1d5745",
+    "user": "U001",
+    "text": "9月刚导入的那两张票，你按销售方的业务帮我把用途填上",
+    "reply": "这两张票我查到了，但目前还没填，原因是我不能按销售方的业务去推用途——用途和销售方、项目名称之间没有可推断的依据，写错了责任是企业的。得您给一个明确的说法，我照原文填。\n\n2026 年 9 月这两张（甲企业，合计 1872.50 元，均为测试样张）：\n\n- TEST20260918000001，09-18，北辰星禾科技有限公司（测试），*纸制品*A4复印纸，282.50 元\n- TEST20260925000002，09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元\n\n另外提两点：依据《甲企业发票用途规则》2.0 版，从 2026 年 9 月起每张发票都必须填用途，没有金额门槛，备注不能代替用途，所以这两张在检查里会算未完成；号码以 TEST 开头的是测试样张，不是真实发票，如果只是练习可以只填其中一张或干脆不填，您定。\n\n请把这两张各自的用途原文发我（比如“办公费”“咨询费”这类您要在系统里留的原话，两张可以不同），我确认后直接保存并回读核对。",
+    "run_id": "R-a3ed5d2c2462",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260918000001\", \"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "search_rules",
+      "args": "{\"query\": \"发票用途填写要求\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"补齐 2026 年 9 月两张导入发票（TEST20260918000001、TEST20260925000002）的用途，需用户提供具体用途原文\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I4",
+  "category": "导入",
+  "title": "为导入的发票补用途并回读",
+  "attempt": 3,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 13556,
+   "completion_tokens": 1066
+  },
+  "seconds": 9.5,
+  "transcript": [
+   {
+    "session": "S-41adc0b71e",
+    "user": "U001",
+    "text": "9月TEST20260925000002的用途填年度税务咨询，保存",
+    "reply": "已保存并回读核对：**TEST20260925000002**（2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元）的用途已填为“年度税务咨询”，备注仍为空。\n\n提醒两点：\n- 这张编号以 TEST 开头，属于导入的测试样张，不是真实发票；本次按你的要求只填了用途。\n- 同批导入的另一张 **TEST20260918000001**（2026-09-18，282.50 元）用途还是空的。依据《甲企业发票用途规则》2.0 版，9 月起每张发票都必须填用途，不设金额门槛。需要我把 9 月未填用途的发票都列出来一起补吗？",
+    "run_id": "R-bbe5bec7eca9",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"TEST20260925000002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "search_rules",
+      "args": "{\"query\": \"测试样张 测试发票 是否可修改用途\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"TEST20260925000002\", \"purpose\": \"年度税务咨询\", \"user_quote\": \"9月TEST20260925000002的用途填年度税务咨询，保存\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "I5",
+  "category": "导入",
+  "title": "乙企业按 1000.00 门槛判断导入的发票",
+  "attempt": 3,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 9615,
+   "completion_tokens": 868
+  },
+  "seconds": 7.0,
+  "transcript": [
+   {
+    "session": "S-7982927e1b",
+    "user": "U001",
+    "text": "9月哪些发票必须填用途但还没填？",
+    "reply": "2026 年 9 月，按《乙企业发票用途规则》1.0 版，这些发票必须填写用途但尚未填写，共 4 张，合计 4870.51 元：\n\n| 发票编号 | 日期 | 销售方 | 项目 | 金额 |\n|---|---|---|---|---|\n| F002 | 2026-09-08 | 星河印刷（模拟） | 宣传资料印刷 | 1000.00 |\n| F005 | 2026-09-12 | 云桥信息服务（模拟） | 运维服务 | 1000.01 |\n| F006 | 2026-09-20 | 栖山酒店（模拟） | 住宿服务 | 1280.50（已有备注“两日住宿”，备注不能代替用途） |\n| TEST20260925000002 | 2026-09-25 | 南湾远帆咨询有限公司（测试） | *现代服务*咨询服务费 | 1590.00 |\n\n规则依据：《乙企业发票用途规则》1.0 版规定，单张发票金额大于或等于 1000.00 元时必须填写用途，等于 1000 元也包含在内；空白或只有空格视为未填写，备注不能代替用途。\n\n以下需要你确认：\n1. TEST20260925000002 是测试样张，不是真实发票。如果你只想处理真实发票，那么实际待填的是 F002、F005、F006 三张，合计 3280.51 元。\n2. 另外，F001、F004、F009、TEST20260918000001 的用途为空，但这 4 张发票的金额低于 1000 元门槛，可以不填，因此未列为不符要求。如果你希望也补上，请告诉我具体用途原文，并说明要补哪几张。",
+    "run_id": "R-bc52dcb12e53",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R003\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"检查 2026 年 9 月发票用途填写情况，补齐必须填写但未填的发票用途\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ }
+]
