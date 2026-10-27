@@ -16,3 +16,4 @@ dist/
 !evals/results/experiment-*/
 !evals/results/20261026-091716/
 /data/external/
+/test-invoices/

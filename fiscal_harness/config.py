@@ -37,6 +37,7 @@ class Settings:
     variant: str
     today: date
     allow_foreign_buyer: bool = False  # 导入时允许购买方不是本企业，仅测试外部样本用
+    allow_test_samples: bool = False   # 导入时允许 invoicegen 生成的测试样张，仅测试用
 
     @property
     def api_key(self) -> str:
@@ -60,4 +61,5 @@ def load_settings() -> Settings:
         variant=os.environ.get("FH_VARIANT", "baseline"),
         today=date.fromisoformat(today) if today else date.today(),
         allow_foreign_buyer=os.environ.get("FH_ALLOW_FOREIGN_BUYER") == "1",
+        allow_test_samples=os.environ.get("FH_ALLOW_TEST_SAMPLES") == "1",
     )

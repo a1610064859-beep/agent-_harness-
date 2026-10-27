@@ -28,7 +28,7 @@ MONEY = r"(-?[\d,]+\.\d{2})"
 class ParsedInvoice:
     file_name: str
     sha256: str
-    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv
+    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample
     invoice_type: str | None = None  # 数电专票 / 数电普票 / 增值税电子专用发票 / 增值税电子普通发票
     invoice_no: str | None = None
     invoice_code: str | None = None
@@ -44,6 +44,7 @@ class ParsedInvoice:
     total_upper: str | None = None
     face_remark: str | None = None   # 票面备注，不写入 invoices.remark（那是用户填写的字段）
     red_of: str | None = None        # 红字发票对应的蓝字发票号码（取自票面备注）
+    is_test_sample: bool = False     # invoicegen 生成的测试样张（TEST 号码、满版水印），默认不导入
     issues: list[str] = field(default_factory=list)  # 阻断导入
     notes: list[str] = field(default_factory=list)   # 提示，不阻断
 
@@ -51,7 +52,9 @@ class ParsedInvoice:
     def invoice_id(self) -> str | None:
         if not self.invoice_no:
             return None
-        return self.invoice_no if len(self.invoice_no) == 20 else f"{self.invoice_code}-{self.invoice_no}"
+        if self.is_test_sample or len(self.invoice_no) == 20:
+            return self.invoice_no
+        return f"{self.invoice_code}-{self.invoice_no}"
 
     @property
     def item_summary(self) -> str:
@@ -158,12 +161,19 @@ def _upper(text: str) -> str | None:
     return None
 
 
+TEST_MARKS = ("测试样张", "测试用模拟")
+
+
 def _parse_text(inv: ParsedInvoice, text: str) -> None:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     inv.issue_date = _date(text)
     inv.invoice_type = _type(text)
     inv.items = _items(lines)
     inv.total_upper = _upper(text)
+    if any(m in text for m in TEST_MARKS) or re.search(r"发票号码[:：]\s*TEST", text):
+        inv.layout = "test_sample"
+        _parse_test_sample(inv, text)
+        return
     no = _first(r"发票号码[:：]\s*([0-9][0-9 ]{6,}[0-9])", text)
     if no:
         inv.invoice_no = no.replace(" ", "")
@@ -207,6 +217,24 @@ def _parse_kv(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
         rows = [ln.split("|") for ln in lines if ln.startswith("*") and "|" in ln]
         if rows and all(len(r) > col for r in rows):
             inv.amount_cents = sum(_money(r[col]) for r in rows)
+
+
+def _parse_test_sample(inv: ParsedInvoice, text: str) -> None:
+    """invoicegen 生成的测试样张：标签与值可能分在两行，购买方、销售方按出现先后识别。"""
+    inv.is_test_sample = True
+    inv.invoice_no = _first(r"发票号码[:：]\s*(TEST\w+)", text)
+    if kind := _first(r"测试用模拟(\S+发票)", text):
+        inv.invoice_type = f"测试样张·{kind}"
+    names = re.findall(r"名称[:：]\s*(.+)", text)
+    tax_ids = re.findall(r"纳税人识别号[:：]\s*(\S+)", text)
+    if len(names) >= 2:
+        inv.buyer_name, inv.seller_name = names[0].strip(), names[1].strip()
+    if len(tax_ids) >= 2:
+        inv.buyer_tax_id, inv.seller_tax_id = tax_ids[:2]
+    if m := re.search(rf"合\s*计\s*[¥￥]\s*{MONEY}\s*[¥￥]\s*{MONEY}", text):
+        inv.amount_cents, inv.tax_cents = _money(m.group(1)), _money(m.group(2))
+    inv.total_cents = _money(_first(rf"（小写）[\s\S]*?[¥￥]\s*{MONEY}", text))
+    inv.face_remark = _first(r"^备\s*\n注\s*\n(.+)$", text, re.M)
 
 
 def _parse_legacy(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
@@ -294,7 +322,13 @@ def _validate(inv: ParsedInvoice) -> None:
                          ("价税合计", inv.total_cents)):
         if value is None:
             inv.issues.append(f"未识别到{label}")
-    if inv.invoice_no and not (len(inv.invoice_no) == 20 or (len(inv.invoice_no) == 8 and inv.invoice_code)):
+    if inv.invoice_no and inv.invoice_no.upper().startswith("TEST"):
+        inv.is_test_sample = True  # 不管识别成哪种版式，TEST 号码一律按测试样张对待
+    if inv.is_test_sample:
+        inv.notes.append("测试样张：由测试发票生成器生成（满版水印、TEST 号码），非真实发票")
+        if inv.invoice_no and not re.fullmatch(r"TEST\w{1,32}", inv.invoice_no):
+            inv.issues.append(f"测试样张号码格式不符：{inv.invoice_no}")
+    elif inv.invoice_no and not (len(inv.invoice_no) == 20 or (len(inv.invoice_no) == 8 and inv.invoice_code)):
         inv.issues.append(f"发票号码格式不符：{inv.invoice_no}（数电票为 20 位；旧版为 8 位号码加 10/12 位代码）")
     if inv.total_cents is not None:
         if inv.amount_cents is None or inv.tax_cents is None:
@@ -375,8 +409,10 @@ def _content(inv: ParsedInvoice) -> dict:
 
 
 def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedInvoice], *,
-                 commit: bool = False, accept_buyer_mismatch: bool = False) -> list[dict]:
-    """逐张判定：imported / duplicate / conflict / rejected。commit=False 时只预览，不写库。"""
+                 commit: bool = False, accept_buyer_mismatch: bool = False,
+                 allow_test_samples: bool = False) -> list[dict]:
+    """逐张判定：imported / duplicate / conflict / rejected。commit=False 时只预览，不写库。
+    测试样张默认拒收；allow_test_samples 只给测试环境用（FH_ALLOW_TEST_SAMPLES=1 且显式放行）。"""
     company = conn.execute("SELECT name, short_name FROM companies WHERE company_id=?", (company_id,)).fetchone()
     if not company:
         raise ValueError(f"企业 {company_id} 不存在")
@@ -385,6 +421,9 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
     try:
         for inv in parsed:
             r = {"file": inv.file_name, "invoice_id": inv.invoice_id, "issues": list(inv.issues), "notes": inv.notes}
+            if inv.is_test_sample:
+                (r["notes"].append("测试模式：已放行测试样张") if allow_test_samples else
+                 r["issues"].append("测试样张不是真实发票，默认不导入（测试时设置 FH_ALLOW_TEST_SAMPLES=1 并显式放行）"))
             if not inv.issues and inv.buyer_name not in (company["name"], company["short_name"]):
                 msg = f"购买方“{inv.buyer_name}”不是 {company['name']}"
                 (r["notes"] if accept_buyer_mismatch else r["issues"]).append(msg)
@@ -437,8 +476,10 @@ def record_import_event(conn: sqlite3.Connection, session_id: str, company_id: s
     if not done:
         return None
     total = sum(p.total_cents for p in done)
+    tests = sum(p.is_test_sample for p in done)
     text = (f"操作员通过导入功能新增了 {len(done)} 张发票（价税合计 {fmt(total)} 元，用途与备注为空）："
             + "；".join(f"{p.invoice_id} {p.issue_date} {fmt(p.total_cents)} 元" for p in done)
+            + (f"。其中 {tests} 张是测试样张（号码以 TEST 开头），不是真实发票" if tests else "")
             + "。具体数据以查询工具为准。")
     conn.execute("INSERT INTO messages (session_id, company_id, role, content, created_at) VALUES (?,?,?,?,?)",
                  (session_id, company_id, "event", text, datetime.now().isoformat(timespec="seconds")))

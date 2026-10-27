@@ -53,6 +53,7 @@ class InvoiceUpload(BaseModel):
     files: list[UploadedFile]
     commit: bool = False
     accept_buyer_mismatch: bool = False
+    allow_test_samples: bool = False
 
 
 class MemoryEdit(BaseModel):
@@ -94,7 +95,7 @@ def create_app(settings) -> FastAPI:
         perms = {f"{r['user_id']}/{r['company_id']}": LEVEL_TEXT[r["level"]] for r in c.execute("SELECT * FROM permissions")}
         return {"users": users, "companies": companies, "permissions": perms, "model": llm.model,
                 "today": settings.today.isoformat(), "recovered_on_start": recovered,
-                "allow_foreign_buyer": settings.allow_foreign_buyer}
+                "allow_foreign_buyer": settings.allow_foreign_buyer, "allow_test_samples": settings.allow_test_samples}
 
     @app.post("/api/sessions")
     def new_session(body: NewSession):
@@ -163,6 +164,8 @@ def create_app(settings) -> FastAPI:
         c, user_id, company_id = viewer(body.session_id, need="write")
         if body.accept_buyer_mismatch and not settings.allow_foreign_buyer:
             raise HTTPException(403, "未开启 FH_ALLOW_FOREIGN_BUYER，不能导入购买方不是本企业的发票")
+        if body.allow_test_samples and not settings.allow_test_samples:
+            raise HTTPException(403, "未开启 FH_ALLOW_TEST_SAMPLES，不能导入测试样张")
         if not body.files or len(body.files) > 50:
             raise HTTPException(400, "一次上传 1–50 个文件")
         parsed = []
@@ -173,7 +176,8 @@ def create_app(settings) -> FastAPI:
                 raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
             parsed.append(invoice_files.parse_bytes(Path(f.name).name, data))
         results = invoice_files.import_files(c, company_id, parsed, commit=body.commit,
-                                             accept_buyer_mismatch=body.accept_buyer_mismatch)
+                                             accept_buyer_mismatch=body.accept_buyer_mismatch,
+                                             allow_test_samples=body.allow_test_samples)
         event = None
         if body.commit:
             event = invoice_files.record_import_event(c, body.session_id, company_id, results, parsed)

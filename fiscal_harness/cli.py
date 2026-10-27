@@ -268,6 +268,33 @@ STATUS_TEXT = {"would_import": "可导入", "imported": "已导入", "duplicate"
                "rejected": "未通过校验"}
 
 
+def _gen_test_invoices(conn, args, s):
+    """用 invoicegen 为某企业生成测试样张：购买方是该企业，开票日期落在指定月份。"""
+    import calendar
+    import random
+
+    from invoicegen.cli import write_batch  # 需要 reportlab，只有生成时才用
+    from invoicegen.fake_data import fake_invoice
+    from invoicegen.models import Party
+
+    company = conn.execute("SELECT name FROM companies WHERE company_id=?", (args.company,)).fetchone()
+    if not company:
+        sys.exit(f"企业 {args.company} 不存在")
+    month = args.month or s.today.strftime("%Y-%m")
+    y, m = map(int, month.split("-"))
+    last = date(y, m, calendar.monthrange(y, m)[1])
+    rng = random.Random(args.seed)
+    buyer = Party(name=company["name"], tax_id="TEST" + args.company.rjust(14, "0"))
+    invoices = [fake_invoice(rng, i + 1, last, buyer=buyer, days=last.day - 1, defect=args.defect or "")
+                for i in range(args.count)]
+    out = Path(args.out or f"test-invoices/{args.company}-{month}")
+    write_batch(invoices, out)
+    print(f"已为 {company['name']} 生成 {len(invoices)} 张 {month} 的测试样张{'（缺陷：' + args.defect + '）' if args.defect else ''}"
+          f" -> {out.resolve()}")
+    print(f"导入预览：FH_ALLOW_TEST_SAMPLES=1 python -m fiscal_harness data import-files --company {args.company} "
+          f"--files {out} --allow-test-samples")
+
+
 def cmd_data(args, s):
     conn = _conn(s)
     if args.action == "import-files":
@@ -275,9 +302,12 @@ def cmd_data(args, s):
             sys.exit("请给出发票文件或目录，如：data import-files --company C001 --files 发票/")
         if args.accept_buyer_mismatch and not s.allow_foreign_buyer:
             sys.exit("--accept-buyer-mismatch 只用于测试外部样本，需同时设置环境变量 FH_ALLOW_FOREIGN_BUYER=1")
+        if args.allow_test_samples and not s.allow_test_samples:
+            sys.exit("--allow-test-samples 只用于测试，需同时设置环境变量 FH_ALLOW_TEST_SAMPLES=1")
         parsed = [invoice_files.parse_file(f) for f in invoice_files.collect(args.files)]
         results = invoice_files.import_files(conn, args.company, parsed, commit=args.commit,
-                                             accept_buyer_mismatch=args.accept_buyer_mismatch)
+                                             accept_buyer_mismatch=args.accept_buyer_mismatch,
+                                             allow_test_samples=args.allow_test_samples)
         if args.json:
             return _out([{**r, "parsed": p.view()} for r, p in zip(results, parsed)])
         for r, p in zip(results, parsed):
@@ -291,6 +321,8 @@ def cmd_data(args, s):
         if not args.commit and any(r["status"] == "would_import" for r in results):
             print("\n以上为预览，未写入。确认无误后加 --commit 导入。")
         return
+    if args.action == "gen-test-invoices":
+        return _gen_test_invoices(conn, args, s)
     if args.action == "invoices":
         sql, a = "SELECT * FROM invoices WHERE company_id=?", [args.company]
         if args.month:
@@ -374,13 +406,19 @@ def main(argv=None):
     a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_runs)
 
-    a = sub.add_parser("data", help="核对当前保存的数据：invoices / bank / ops；导入发票文件：import-files")
-    a.add_argument("action", choices=["invoices", "bank", "ops", "import-files"])
+    a = sub.add_parser("data", help="核对当前保存的数据：invoices / bank / ops；导入发票文件：import-files；"
+                                    "生成测试样张：gen-test-invoices")
+    a.add_argument("action", choices=["invoices", "bank", "ops", "import-files", "gen-test-invoices"])
     a.add_argument("--files", nargs="+", help="import-files：PDF/OFD 文件或目录")
     a.add_argument("--company", default="C001")
     a.add_argument("--month")
     a.add_argument("--commit", action="store_true", help="import-files：确认写入（默认只预览）")
     a.add_argument("--accept-buyer-mismatch", action="store_true", help="import-files：购买方不是本企业时也导入（测试用）")
+    a.add_argument("--allow-test-samples", action="store_true", help="import-files：放行 invoicegen 测试样张（测试用）")
+    a.add_argument("--count", "-n", type=int, default=5, help="gen-test-invoices：张数")
+    a.add_argument("--seed", type=int, help="gen-test-invoices：随机种子，固定后可复现")
+    a.add_argument("--defect", choices=["total", "upper"], help="gen-test-invoices：故意印错价税合计或大写，测校验")
+    a.add_argument("--out", help="gen-test-invoices：输出目录，默认 test-invoices/<企业>-<月份>")
     a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_data)
 

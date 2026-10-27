@@ -386,6 +386,7 @@ function readB64(file) {
 async function uploadInvoices(commit) {
   const body = { session_id: state.sid, commit,
                  accept_buyer_mismatch: $("#impAccept")?.checked || false,
+                 allow_test_samples: $("#impTest")?.checked || false,
                  files: await Promise.all(imp.files.map(async (f) => ({ name: f.name, data: await readB64(f) }))) };
   $("#impMsg").textContent = commit ? "导入中…" : "解析中…";
   try {
@@ -432,6 +433,8 @@ function renderImport() {
     <div id="impList" class="muted" style="font-size:12px;margin-bottom:8px"></div>
     ${state.meta.allow_foreign_buyer ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impAccept" style="width:auto">
       允许购买方不是本企业（测试模式，FH_ALLOW_FOREIGN_BUYER=1）</label>` : ""}
+    ${state.meta.allow_test_samples ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impTest" style="width:auto">
+      放行测试样张（TEST 号码，测试模式，FH_ALLOW_TEST_SAMPLES=1）</label>` : ""}
     <div style="display:flex;gap:8px;margin:8px 0"><button id="impPreview" ${can ? "" : "disabled"}>解析预览</button>
       <button class="primary" id="impCommit" disabled>确认导入</button></div>
     <div class="muted" id="impMsg" style="font-size:12px;margin-bottom:8px">程序解析票面并核对：金额 + 税额 = 价税合计、大写与小写一致、号码格式。任何一项对不上都不会导入。</div>

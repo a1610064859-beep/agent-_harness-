@@ -57,6 +57,7 @@ scripts/setup.sh
 | `recover` | 核对中断留下的未回读写入（`chat`、`ask`、`serve` 启动时会自动执行） |
 | `data invoices --company C001 --month 2026-09` / `data ops` | 核对库内当前数据，以及每次写入的前后对比 |
 | `data import-files --company C001 --files 发票目录/ [--commit]` | 导入 PDF/OFD 电子发票：默认只预览，加 `--commit` 才写入（见下文“导入发票文件”） |
+| `data gen-test-invoices --company C001 --month 2026-09 -n 5 [--defect upper]` | 生成测试样张，购买方是该企业（见下文“测试样张”） |
 
 ## 导入发票文件
 
@@ -72,10 +73,28 @@ scripts/setup.sh
 - 票面全部字段（税号、不含税金额、税额、票面备注、来源文件哈希）存在 `invoice_sources` 表；`invoices` 表结构不变。
 - 导入只由操作员在网页或命令行执行，模型没有导入工具，对话中仍只能修改用途和备注。
 
+## 测试样张（invoicegen）
+
+仓库内附带测试发票生成器 `invoicegen/`，用来批量造票测试导入流程，不必依赖外部样本：
+
+```bash
+python -m fiscal_harness data gen-test-invoices --company C001 --month 2026-09 -n 5 --seed 1
+FH_ALLOW_TEST_SAMPLES=1 python -m fiscal_harness data import-files --company C001 \
+    --files test-invoices/C001-2026-09 --allow-test-samples          # 预览；确认后加 --commit
+```
+
+Windows：`scripts\gen-test-invoices.bat --company C001 --month 2026-09 -n 5`。
+
+- 生成的 PDF 满版“测试样张 · 非真实发票”水印，号码与税号以 `TEST` 开头，销售方名称带“（测试）”，没有印章；同目录有逐张 JSON（标准答案）和 `index.csv`。
+- 导入时识别为 `test_sample` 版式，**默认拒收**；只有设置 `FH_ALLOW_TEST_SAMPLES=1` 并在命令行加 `--allow-test-samples`（或在网页勾选放行）才导入。任何版式里出现 `TEST` 号码都按测试样张处理。
+- 其余校验照常：金额 + 税额 = 价税合计、大写与小写一致、购买方是本企业、重复与冲突。`--defect total|upper` 生成故意印错的票，用来验证这些校验能拦住。
+- 导入后的会话事件会注明哪些是测试样张。要清掉测试数据，运行 `init --reset`。
+- 生成器也可单独使用：`python -m invoicegen random -n 10 --seed 42 -o out/`、`python -m invoicegen render invoicegen/examples/sample.json -o out/`。只能用于软件测试，不要用它伪造票据。
+
 ## 验证
 
 ```bash
-python -m pytest -q                  # 88 项确定性测试，不调用模型
+python -m pytest -q                  # 119 项确定性测试，不调用模型
 python -m evals.run --repeat 3       # 24 个多轮案例，真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录
@@ -106,6 +125,7 @@ fiscal_harness/
   runlog.py     运行记录（过滤密钥）
   llm.py        OpenAI 兼容适配器；测试用脚本化模型
   web.py        演示网页 API
+invoicegen/     测试发票生成器（测试样张：TEST 号码、满版水印）
 web/index.html  演示网页（单文件，不需要构建）
 data/source/    官方材料原件（只在导入时读取）
 tests/          确定性测试
