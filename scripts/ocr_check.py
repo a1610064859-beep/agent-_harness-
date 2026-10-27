@@ -48,10 +48,14 @@ def main(argv: list[str]) -> int:
     if not files:
         print("用法：python scripts/ocr_check.py <电子发票 PDF 文件或目录>")
         return 2
-    right = total = passed = false_accept = 0
+    right = total = passed = false_accept = test_samples = 0
     for f in files:
         truth = inf.parse_file(f)
-        if truth.layout == "no_text" or truth.issues or truth.is_test_sample:
+        if truth.is_test_sample:
+            test_samples += 1
+            print(f"跳过 {f.name}：测试样张（水印会挡字，不能当标准答案）")
+            continue
+        if truth.layout == "no_text" or truth.issues:
             print(f"跳过 {f.name}：文字层本身没有可靠的标准答案（{truth.layout}，{truth.issues[:1]}）")
             continue
         for label, data, suffix in images(f.read_bytes(), degrade):
@@ -70,7 +74,9 @@ def main(argv: list[str]) -> int:
             for x in p.issues:
                 print(f"    · {x}")
     if not total:
-        print("没有可比对的文件。")
+        print("没有可比对的文件。" + (f"其中 {test_samples} 份是 invoicegen 测试样张，只能用来验证测试票被拒收，"
+                                     "不能衡量识别准确率。请改用真实的电子发票 PDF（有文字层，如电子税务局下载的数电票）。"
+                                     if test_samples else ""))
         return 2
     n = total // len(FIELDS)
     print(f"\n字段正确 {right}/{total}；通过校验 {passed}/{n} 张；通过校验但有字段错误：{false_accept} 张（应为 0）")

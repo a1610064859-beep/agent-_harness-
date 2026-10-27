@@ -5,12 +5,17 @@ rem Usage: scripts\setup-ocr.bat [standard^|basic]     (default: standard; uses 
 rem - MinerU 4.0.12 goes into its own venv .ocr\venv (many packages; kept apart from the harness .venv)
 rem - downloads the tier's models (standard about 2 GB; falls back to ModelScope if HuggingFace fails)
 rem - turns MinerU telemetry off and keeps parsing local (never uses the mineru.net remote service)
-rem - installs the QR reader into .venv and writes FH_OCR / FH_MINERU_BIN / FH_OCR_TIER into .env
+rem - installs the QR reader into .venv and writes FH_OCR / FH_MINERU_BIN / FH_OCR_TIER / MINERU_HOME into .env
+rem - MinerU's models, config and cache go to .ocr\home (not C:\Users\...\.mineru), unless .env already sets MINERU_HOME
 cd /d "%~dp0.."
 chcp 65001 >nul
 set PYTHONUTF8=1
 set "TIER=%~1"
 if "%TIER%"=="" set "TIER=standard"
+set "MINERU_HOME="
+if exist .env for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"MINERU_HOME=" .env') do set "MINERU_HOME=%%B"
+if not defined MINERU_HOME set "MINERU_HOME=%CD%\.ocr\home"
+echo [setup-ocr] MINERU_HOME=%MINERU_HOME%
 if not exist .venv\Scripts\python.exe call "%~dp0setup.bat" nopause || goto :fail
 
 set "UV="
@@ -44,7 +49,7 @@ pushd data\ocr
 "%M%" server stop
 "%M%" server start
 popd
-.venv\Scripts\python scripts\ocr_env.py "%M%" %TIER% || goto :fail
+.venv\Scripts\python scripts\ocr_env.py "%M%" %TIER% "%MINERU_HOME%" || goto :fail
 echo.
 echo [setup-ocr] Done. Check accuracy and speed on this PC:  scripts\ocr-check.bat
 echo [setup-ocr] Then import scans as usual (web import tab, or: data import-files --confirm-ocr).

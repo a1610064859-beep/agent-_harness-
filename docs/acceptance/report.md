@@ -4,7 +4,7 @@
 
 | 项 | 结果 | 明细 |
 |---|---|---|
-| 确定性测试 `python -m pytest -q` | **153 passed** | 含 ec2d61e 复评回归测试 14 项（`tests/test_review_ec2d61e.py`）、扫描件识别 19 项（`tests/test_ocr.py`） |
+| 确定性测试 `python -m pytest -q` | **161 passed** | 含 ec2d61e 复评回归测试 14 项（`tests/test_review_ec2d61e.py`）、扫描件识别 19 项（`tests/test_ocr.py`）、f773ae7 复评回归测试 8 项（`tests/test_review_f773ae7.py`） |
 | 多轮评测 `python -m evals.run --repeat 3` | **87/87**（29 个案例 × 3 次） | `evals/results/20261027-082932/`；tokens 输入 822,595、输出 52,035。在加入扫描件识别之前运行；识别只改导入路径，不涉及对话 |
 | 扫描件识别自检 `scripts/ocr_check.py`（MinerU basic 档，CPU） | 字段 54/54，6/6 张通过，通过校验但有字段错误 0 张 | `docs/ocr-mineru-evaluation.md` 第 6 节；速度数据因缓存不可作数 |
 | 规则引用异常（不计入通过条件） | 7 条，涉及 4 次运行（R4 ×2、P3 ×2） | 回复引用了系统输入规则目录里的版本，而该轮工具没有返回；口径待定，见 `docs/reviews/R-ext-ec2d61e-response.md` |

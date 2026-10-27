@@ -1,6 +1,6 @@
 """把识别设置写进 .env（已有的同名项就地替换，其他内容不动）。setup-ocr.bat 调用。
 
-用法：python scripts/ocr_env.py <mineru 路径> <档位>
+用法：python scripts/ocr_env.py <mineru 路径> <档位> <MINERU_HOME>
 """
 import re
 import sys
@@ -10,8 +10,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def main(argv: list[str]) -> int:
-    mineru, tier = argv
-    values = {"FH_OCR": "mineru", "FH_MINERU_BIN": mineru, "FH_OCR_TIER": tier}
+    mineru, tier, home = argv
+    # MINERU_HOME 也写进 .env：harness 调用 MinerU 时从 .env 读到它，模型和缓存就留在同一处
+    values = {"FH_OCR": "mineru", "FH_MINERU_BIN": mineru, "FH_OCR_TIER": tier, "MINERU_HOME": home}
     env = ROOT / ".env"
     lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
     for key, value in values.items():

@@ -340,9 +340,15 @@ def _check_ocr(inv: ParsedInvoice, data: bytes) -> None:
         inv.issues.append(f"二维码中的发票代码 {q['code']} 与识别结果 {inv.invoice_code} 不一致")
     if q["issue_date"] != inv.issue_date:
         inv.issues.append(f"二维码中的开票日期 {q['issue_date']} 与识别结果 {inv.issue_date} 不一致")
-    # 旧版票二维码里是不含税金额（实测）；数电票未取得带二维码的样本，两种口径都接受
-    if q["amount_cents"] not in (inv.amount_cents, inv.total_cents):
-        inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的金额、价税合计都不一致")
+    if len(q["number"]) == 20:
+        # 数电票：没有取得带二维码的真实样本，金额口径未经验证，不含税金额或价税合计任一一致都接受
+        if q["amount_cents"] not in (inv.amount_cents, inv.total_cents):
+            inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的金额、价税合计都不一致")
+        else:
+            inv.notes.append("数电票二维码金额口径未经真实样本验证（不含税或价税合计任一一致即可），请人工核对金额")
+    elif q["amount_cents"] != inv.amount_cents:  # 旧版票：二维码金额为不含税金额（真实样本实测）
+        inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的不含税金额 "
+                          f"{'—' if inv.amount_cents is None else fmt(inv.amount_cents)} 不一致")
     if not any("二维码" in x for x in inv.issues):
         inv.notes.append("二维码核对一致：号码、日期、金额")
 
@@ -520,6 +526,24 @@ def _content(inv: ParsedInvoice) -> dict:
             "amount_cents": inv.total_cents}
 
 
+# 判断同号票是否“同一张”时比较的票面业务字段（parsed_json 的键）。票面备注、版式、文件名不比：同一张票的
+# 电子件和扫描件在这些上本来就会不同
+BUSINESS_FIELDS = {"issue_date": "开票日期", "buyer_name": "购买方", "buyer_tax_id": "购买方税号",
+                   "seller_name": "销售方", "seller_tax_id": "销售方税号", "items": "项目",
+                   "amount": "金额", "tax": "税额", "total": "价税合计"}
+
+
+def _differences(conn: sqlite3.Connection, company_id: str, inv: ParsedInvoice, existing: sqlite3.Row) -> list[str]:
+    """同号票与库内记录不同的字段。库内票来自导入文件时比较全部票面业务字段，来自示例数据时只能比较库表字段。"""
+    src = conn.execute("SELECT parsed_json FROM invoice_sources WHERE company_id=? AND invoice_id=?",
+                       (company_id, inv.invoice_id)).fetchone()
+    if src:
+        old, new = json.loads(src["parsed_json"]), inv.view()
+        return [f"{label} {old.get(k)} → {new.get(k)}" for k, label in BUSINESS_FIELDS.items() if old.get(k) != new.get(k)]
+    old, new = dict(existing), _content(inv)
+    return [f"{k} {old[k]} → {new[k]}" for k in new if old[k] != new[k]]
+
+
 def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedInvoice], *,
                  commit: bool = False, accept_buyer_mismatch: bool = False,
                  allow_test_samples: bool = False, confirm_ocr: bool = False) -> list[dict]:
@@ -551,11 +575,11 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
                                   f"库内找不到对应的蓝字发票{'（票面写明 ' + inv.red_of + '）' if inv.red_of else ''}，请复核")
             if r["issues"]:
                 r["status"] = "rejected"
-            elif existing and dict(existing) == _content(inv):
+            elif existing and not (diff := _differences(conn, company_id, inv, existing)):
                 r["status"] = "duplicate"
             elif existing:
                 r["status"] = "conflict"
-                r["issues"].append(f"库内或本批前面的文件中已有同号发票，内容不同：{dict(existing)}")
+                r["issues"].append(f"库内或本批前面的文件中已有同号发票，内容不同：{'；'.join(diff)}")
             elif inv.layout == OCR_LAYOUT and commit and not confirm_ocr:
                 r["status"] = "needs_confirmation"
                 r["notes"].append("识别件未导入：请对照票面核对号码和日期，确认后再导入（命令行加 --confirm-ocr，网页勾选确认）")

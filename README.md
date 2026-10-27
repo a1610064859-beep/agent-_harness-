@@ -78,13 +78,13 @@ scripts/setup.sh
 没有文字层的发票（扫描 PDF、手机拍照、PNG/JPG 等）默认不能导入，会提示“没有文字层”。在本机安装 MinerU 后可以识别：
 
 ```bat
-scripts\setup-ocr.bat            :: 一次性：MinerU 装进 .ocr\venv，下载 standard 档模型（约 2 GB，有显卡时走 Vulkan），写入 .env
-scripts\ocr-check.bat 发票目录\  :: 用你手头有文字层的电子发票 PDF 自检识别准确率和速度
+scripts\setup-ocr.bat            :: 一次性：MinerU 装进 .ocr\venv，模型与缓存放 .ocr\home（约 2 GB，有显卡时走 Vulkan），写入 .env
+scripts\ocr-check.bat 发票目录\  :: 用你手头有文字层的真实电子发票 PDF 自检识别准确率和速度（测试样张不能用）
 ```
 
 - 只在本机运行：不使用 mineru.net 云端（从不加 `--remote`），关闭 MinerU 遥测；识别完从 MinerU 文档库删掉记录。
 - 只有图片和没有文字层的 PDF 才走识别；有文字层的 PDF、OFD 仍用原来的确定性解析。
-- 识别结果走与文字层**相同的程序校验**（金额 + 税额 = 价税合计、大写 = 小写、号码格式、购买方、重复与冲突），另加：税号校验位提示；票面二维码与识别出的号码、代码、日期、金额交叉核对，不一致就不导入。
+- 识别结果走与文字层**相同的程序校验**（金额 + 税额 = 价税合计、大写 = 小写、号码格式、购买方、重复与冲突），另加：税号校验位提示；票面二维码与识别出的号码、代码、日期、金额交叉核对，不一致就不导入（旧版票二维码金额按不含税金额严格核对；数电票的口径未取得真实样本，不含税或价税合计任一一致即可，并提示人工核对）。
 - 号码、日期、名称没有校验位，所以识别件导入前**必须人工确认**：网页勾选“我已对照票面核对号码和日期”，命令行加 `--confirm-ocr`；未确认时状态为“待人工确认”，不入库。
 - 设置项：`FH_OCR=mineru`、`FH_MINERU_BIN`（MinerU 命令行路径）、`FH_OCR_TIER`（basic / standard）、`FH_OCR_TIMEOUT`（秒，默认 300）。实测与设计见 [docs/ocr-mineru-evaluation.md](docs/ocr-mineru-evaluation.md)。
 
@@ -109,7 +109,7 @@ Windows：`scripts\gen-test-invoices.bat --company C001 --month 2026-09 -n 5`。
 ## 验证
 
 ```bash
-python -m pytest -q                  # 153 项确定性测试，不调用模型，也不需要安装 MinerU
+python -m pytest -q                  # 161 项确定性测试，不调用模型，也不需要安装 MinerU
 python -m evals.run --repeat 3       # 29 个多轮案例（含 5 个导入后的案例），真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录
