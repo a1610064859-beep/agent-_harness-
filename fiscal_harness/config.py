@@ -36,6 +36,7 @@ class Settings:
     history_chars: int
     variant: str
     today: date
+    allow_foreign_buyer: bool = False  # 导入时允许购买方不是本企业，仅测试外部样本用
 
     @property
     def api_key(self) -> str:
@@ -58,4 +59,5 @@ def load_settings() -> Settings:
         # 对比实验：baseline=规则由程序解析；model_rules=把全部规则版本原样交给模型自行判断
         variant=os.environ.get("FH_VARIANT", "baseline"),
         today=date.fromisoformat(today) if today else date.today(),
+        allow_foreign_buyer=os.environ.get("FH_ALLOW_FOREIGN_BUYER") == "1",
     )

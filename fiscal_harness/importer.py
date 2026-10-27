@@ -13,7 +13,7 @@ from .money import to_cents
 
 LEVELS = {"可查看并修改": "write", "仅查看": "read", "无权访问": "none"}
 BUSINESS_TABLES = ("operations", "open_items", "tasks", "memories", "messages", "sessions", "run_steps", "runs",
-                   "rule_versions", "invoices", "bank_txns", "permissions", "users", "companies")
+                   "rule_versions", "invoice_sources", "invoices", "bank_txns", "permissions", "users", "companies")
 
 
 def _rows_after_header(ws, first_header: str):

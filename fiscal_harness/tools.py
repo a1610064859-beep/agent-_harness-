@@ -419,7 +419,7 @@ def purpose_status(conn: sqlite3.Connection, company_id: str, month: str) -> dic
     for r in rows:
         if (r["purpose"] or "").strip():
             filled.append(r["invoice_id"])
-        elif r["amount_cents"] >= threshold:
+        elif abs(r["amount_cents"]) >= threshold:  # 红字发票按票面金额绝对值比较门槛
             missing.append(r)
         else:
             optional_blank.append(r)

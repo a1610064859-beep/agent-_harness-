@@ -33,6 +33,17 @@ CREATE TABLE IF NOT EXISTS invoices (
     updated_at TEXT,
     PRIMARY KEY (company_id, invoice_id)
 );
+-- 从发票文件导入的票面全部字段与来源；invoices 只存业务上用到的几列
+CREATE TABLE IF NOT EXISTS invoice_sources (
+    company_id TEXT NOT NULL,
+    invoice_id TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    layout TEXT NOT NULL,
+    parsed_json TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (company_id, invoice_id)
+);
 CREATE TABLE IF NOT EXISTS bank_txns (
     company_id TEXT NOT NULL REFERENCES companies(company_id),
     txn_id TEXT NOT NULL,

@@ -9,7 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import db, harness, importer, knowledge, memory, runlog
+from . import db, harness, importer, invoice_files, knowledge, memory, runlog
 from .config import load_settings
 from .llm import LLMError, from_settings
 from .money import fmt
@@ -264,8 +264,33 @@ def _print_run(run: dict, full: bool) -> None:
 
 # ---------- 数据核对 ----------
 
+STATUS_TEXT = {"would_import": "可导入", "imported": "已导入", "duplicate": "已存在，跳过", "conflict": "同号冲突",
+               "rejected": "未通过校验"}
+
+
 def cmd_data(args, s):
     conn = _conn(s)
+    if args.action == "import-files":
+        if not args.files:
+            sys.exit("请给出发票文件或目录，如：data import-files --company C001 --files 发票/")
+        if args.accept_buyer_mismatch and not s.allow_foreign_buyer:
+            sys.exit("--accept-buyer-mismatch 只用于测试外部样本，需同时设置环境变量 FH_ALLOW_FOREIGN_BUYER=1")
+        parsed = [invoice_files.parse_file(f) for f in invoice_files.collect(args.files)]
+        results = invoice_files.import_files(conn, args.company, parsed, commit=args.commit,
+                                             accept_buyer_mismatch=args.accept_buyer_mismatch)
+        if args.json:
+            return _out([{**r, "parsed": p.view()} for r, p in zip(results, parsed)])
+        for r, p in zip(results, parsed):
+            v = p.view()
+            print(f"[{STATUS_TEXT[r['status']]}] {r['invoice_id'] or '（无号码）'}  {v['issue_date'] or '—'}  "
+                  f"{v['total'] or '—':>10}  {v['seller_name'] or '—'}  ← {r['file']}")
+            for x in r["issues"]:
+                print(f"    ✕ {x}")
+            for x in r["notes"]:
+                print(f"    · {x}")
+        if not args.commit and any(r["status"] == "would_import" for r in results):
+            print("\n以上为预览，未写入。确认无误后加 --commit 导入。")
+        return
     if args.action == "invoices":
         sql, a = "SELECT * FROM invoices WHERE company_id=?", [args.company]
         if args.month:
@@ -349,10 +374,14 @@ def main(argv=None):
     a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_runs)
 
-    a = sub.add_parser("data", help="核对当前保存的数据：invoices / bank / ops")
-    a.add_argument("action", choices=["invoices", "bank", "ops"])
+    a = sub.add_parser("data", help="核对当前保存的数据：invoices / bank / ops；导入发票文件：import-files")
+    a.add_argument("action", choices=["invoices", "bank", "ops", "import-files"])
+    a.add_argument("--files", nargs="+", help="import-files：PDF/OFD 文件或目录")
     a.add_argument("--company", default="C001")
     a.add_argument("--month")
+    a.add_argument("--commit", action="store_true", help="import-files：确认写入（默认只预览）")
+    a.add_argument("--accept-buyer-mismatch", action="store_true", help="import-files：购买方不是本企业时也导入（测试用）")
+    a.add_argument("--json", action="store_true")
     a.set_defaults(func=cmd_data)
 
     a = sub.add_parser("recover", help="核对中断留下的未回读写入")

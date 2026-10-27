@@ -1,6 +1,8 @@
 """演示网页的 HTTP 接口。页面只展示后端真实结果：对话、当前数据、任务与记忆、规则、运行记录。"""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from pathlib import Path
 
@@ -8,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import db, harness, knowledge, memory, runlog
+from . import db, harness, invoice_files, knowledge, memory, runlog
 from .llm import LLMError, from_settings
 from .money import fmt, to_cents
 from .tools import LEVEL_TEXT, ToolError, _pref_view, _task_view, purpose_status, recover_pending
@@ -39,6 +41,20 @@ class RuleStatus(BaseModel):
     status: str
 
 
+class UploadedFile(BaseModel):
+    name: str
+    data: str  # base64
+
+
+class InvoiceUpload(BaseModel):
+    user_id: str
+    company_id: str
+    files: list[UploadedFile]
+    commit: bool = False
+    accept_buyer_mismatch: bool = False
+    session_id: str | None = None  # 导入成功后在该会话记一条系统事件
+
+
 class MemoryEdit(BaseModel):
     user_id: str
     company_id: str
@@ -64,7 +80,8 @@ def create_app(settings) -> FastAPI:
         companies = [dict(r) for r in c.execute("SELECT * FROM companies ORDER BY company_id")]
         perms = {f"{r['user_id']}/{r['company_id']}": LEVEL_TEXT[r["level"]] for r in c.execute("SELECT * FROM permissions")}
         return {"users": users, "companies": companies, "permissions": perms, "model": llm.model,
-                "today": settings.today.isoformat(), "recovered_on_start": recovered}
+                "today": settings.today.isoformat(), "recovered_on_start": recovered,
+                "allow_foreign_buyer": settings.allow_foreign_buyer}
 
     @app.post("/api/sessions")
     def new_session(body: NewSession):
@@ -121,6 +138,39 @@ def create_app(settings) -> FastAPI:
                                       "updated_at")}, "amount": fmt(r["amount_cents"])}
                 for r in c.execute(sql + " ORDER BY issue_date, invoice_id", args)]
 
+    @app.get("/api/invoice-months")
+    def invoice_months(company_id: str):
+        return [r["m"] for r in conn().execute("SELECT DISTINCT substr(issue_date,1,7) m FROM invoices "
+                                               "WHERE company_id=? ORDER BY m", (company_id,))]
+
+    @app.post("/api/invoice-files")
+    def upload_invoices(body: InvoiceUpload):
+        """预览（commit=false）或导入发票文件。解析与校验全部由程序完成，不经模型。"""
+        c = conn()
+        try:
+            invoice_files.require_write(c, body.user_id, body.company_id)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        if body.accept_buyer_mismatch and not settings.allow_foreign_buyer:
+            raise HTTPException(403, "未开启 FH_ALLOW_FOREIGN_BUYER，不能导入购买方不是本企业的发票")
+        if not body.files or len(body.files) > 50:
+            raise HTTPException(400, "一次上传 1–50 个文件")
+        parsed = []
+        for f in body.files:
+            try:
+                data = base64.b64decode(f.data, validate=True)
+            except (binascii.Error, ValueError):
+                raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
+            parsed.append(invoice_files.parse_bytes(Path(f.name).name, data))
+        results = invoice_files.import_files(c, body.company_id, parsed, commit=body.commit,
+                                             accept_buyer_mismatch=body.accept_buyer_mismatch)
+        event = None
+        if body.commit and body.session_id:
+            sess = c.execute("SELECT user_id, company_id FROM sessions WHERE session_id=?", (body.session_id,)).fetchone()
+            if sess and (sess["user_id"], sess["company_id"]) == (body.user_id, body.company_id):
+                event = invoice_files.record_import_event(c, body.session_id, body.company_id, results, parsed)
+        return {"event": event, "results": [{**r, "parsed": p.view()} for r, p in zip(results, parsed)]}
+
     @app.get("/api/operations")
     def operations(company_id: str | None = None):
         c = conn()
@@ -159,7 +209,9 @@ def create_app(settings) -> FastAPI:
         if not level or level["level"] == "none":
             return {"forbidden": True}
         months = []
-        for month in ("2026-07", "2026-08", "2026-09"):
+        have = [r["m"] for r in c.execute("SELECT DISTINCT substr(issue_date,1,7) m FROM invoices WHERE company_id=?",
+                                          (company_id,))]
+        for month in sorted({"2026-07", "2026-08", "2026-09", *have}):  # 官方三个月 + 导入发票所在月份
             inv = c.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_cents),0) s FROM invoices WHERE company_id=? "
                             "AND substr(issue_date,1,7)=?", (company_id, month)).fetchone()
             bank = {r["direction"]: r["s"] for r in c.execute(

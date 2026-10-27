@@ -1,0 +1,445 @@
+"""发票文件导入：OFD 与 PDF 文本层 → 标准字段 → 程序校验 → 入库。
+
+只做确定性解析，不用 OCR，也不交给模型猜：字段取不到或校验对不上就列为问题，由人复核。
+导入只在命令行由操作员执行；对话中的模型仍然只能改用途和备注。
+"""
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import re
+import sqlite3
+import xml.etree.ElementTree as ET
+import zipfile
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
+from pathlib import Path
+
+from .money import fmt, to_cents
+
+SUFFIXES = (".pdf", ".ofd")
+USCC = re.compile(r"^[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}$")
+UPPER_CHARS = "负零壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整正"
+MONEY = r"(-?[\d,]+\.\d{2})"
+
+
+@dataclass
+class ParsedInvoice:
+    file_name: str
+    sha256: str
+    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv
+    invoice_type: str | None = None  # 数电专票 / 数电普票 / 增值税电子专用发票 / 增值税电子普通发票
+    invoice_no: str | None = None
+    invoice_code: str | None = None
+    issue_date: str | None = None
+    buyer_name: str | None = None
+    buyer_tax_id: str | None = None
+    seller_name: str | None = None
+    seller_tax_id: str | None = None
+    items: list[str] = field(default_factory=list)
+    amount_cents: int | None = None  # 不含税合计
+    tax_cents: int | None = None
+    total_cents: int | None = None   # 价税合计，对应 invoices.amount_cents
+    total_upper: str | None = None
+    face_remark: str | None = None   # 票面备注，不写入 invoices.remark（那是用户填写的字段）
+    red_of: str | None = None        # 红字发票对应的蓝字发票号码（取自票面备注）
+    issues: list[str] = field(default_factory=list)  # 阻断导入
+    notes: list[str] = field(default_factory=list)   # 提示，不阻断
+
+    @property
+    def invoice_id(self) -> str | None:
+        if not self.invoice_no:
+            return None
+        return self.invoice_no if len(self.invoice_no) == 20 else f"{self.invoice_code}-{self.invoice_no}"
+
+    @property
+    def item_summary(self) -> str:
+        if not self.items:
+            return ""
+        return self.items[0] if len(self.items) == 1 else f"{self.items[0]}等{len(self.items)}项"
+
+    def view(self) -> dict:
+        d = asdict(self)
+        for k in ("amount_cents", "tax_cents", "total_cents"):
+            v = d.pop(k)
+            d[k.removesuffix("_cents")] = None if v is None else fmt(v)
+        return {"invoice_id": self.invoice_id, **d}
+
+
+# ---------- 大写金额 ----------
+
+_DIG = dict(zip("零壹贰叁肆伍陆柒捌玖", range(10)))
+_UNIT = {"拾": 10, "佰": 100, "仟": 1000}
+
+
+def _section(text: str) -> int:
+    total = num = 0
+    for ch in text:
+        if ch in _DIG:
+            num = _DIG[ch]
+        elif ch in _UNIT:
+            total += (num or 1) * _UNIT[ch]
+            num = 0
+        else:
+            raise ValueError(f"无法识别的大写字符“{ch}”")
+    return total + num
+
+
+def upper_to_cents(text: str) -> int:
+    """把“壹仟陆佰玖拾壹圆贰角叁分”“负贰仟壹佰捌拾圆整”换算成分。"""
+    s = text.strip().replace("（负数）", "负").replace("圆", "元")
+    neg = s.startswith("负")
+    s = s.lstrip("负").rstrip("整正")
+    if not s:
+        raise ValueError("大写金额为空")
+    yuan, has_yuan, frac = s.partition("元")
+    if not has_yuan:
+        yuan, frac = "", s
+    integer = 0
+    for big, mult in (("亿", 10 ** 8), ("万", 10 ** 4)):
+        if big in yuan:
+            head, yuan = yuan.split(big, 1)
+            integer += _section(head) * mult
+    integer += _section(yuan)
+    jiao = fen = 0
+    if m := re.search(r"([零壹贰叁肆伍陆柒捌玖])角", frac):
+        jiao = _DIG[m.group(1)]
+    if m := re.search(r"([零壹贰叁肆伍陆柒捌玖])分", frac):
+        fen = _DIG[m.group(1)]
+    if re.sub(r"[零壹贰叁肆伍陆柒捌玖角分]", "", frac):
+        raise ValueError(f"无法识别的角分部分“{frac}”")
+    cents = integer * 100 + jiao * 10 + fen
+    return -cents if neg else cents
+
+
+# ---------- 文本解析（PDF 文本层，以及没有标签结构的 OFD） ----------
+
+def _money(text: str | None) -> int | None:
+    return None if text is None else to_cents(text.replace(",", ""))
+
+
+def _first(pattern: str, text: str, flags=0) -> str | None:
+    m = re.search(pattern, text, flags)
+    return m.group(1).strip() if m else None
+
+
+def _items(lines: list[str]) -> list[str]:
+    out = []
+    for line in lines:
+        line = re.sub(r"\s+\*", "*", line.strip())  # “*文化服务 *广告发布费”
+        if m := re.match(r"^(\*[一-鿿][^*\s|]*\*[^\s|]+)", line):  # 分类以汉字开头，排除密码区
+            out.append(m.group(1))
+    return out
+
+
+def _date(text: str) -> str | None:
+    if m := re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", text):
+        try:
+            return date(*map(int, m.groups())).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
+TYPES = (("电子发票（增值税专用发票）", "数电专票"), ("电子发票（普通发票）", "数电普票"),
+         ("增值税电子专用发票", "增值税电子专用发票"), ("增值税电子普通发票", "增值税电子普通发票"))
+
+
+def _type(text: str) -> str | None:
+    compact = re.sub(r"\s+", "", text)
+    return next((name for title, name in TYPES if title in compact), None)
+
+
+def _upper(text: str) -> str | None:
+    for token in re.findall(f"[{UPPER_CHARS}]{{3,}}", text):
+        if "元" in token or "圆" in token:
+            return token
+    return None
+
+
+def _parse_text(inv: ParsedInvoice, text: str) -> None:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    inv.issue_date = _date(text)
+    inv.invoice_type = _type(text)
+    inv.items = _items(lines)
+    inv.total_upper = _upper(text)
+    no = _first(r"发票号码[:：]\s*([0-9][0-9 ]{6,}[0-9])", text)
+    if no:
+        inv.invoice_no = no.replace(" ", "")
+        inv.invoice_code = _first(r"发票代码[:：]\s*(\d{10,12})", text)
+    if "统一社会信用代码" in text and inv.invoice_no:
+        inv.layout = "pdf_digital"
+        _parse_digital(inv, text, lines)
+    elif "购买方名称" in text or "销售方名称" in text:
+        inv.layout = "text_kv"
+        _parse_kv(inv, text, lines)
+    else:
+        inv.layout = "pdf_legacy"
+        _parse_legacy(inv, text, lines)
+
+
+def _parse_digital(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
+    if m := re.search(r"名称[:：]\s*(.+?)\s+名称[:：]\s*(.+)", text):
+        inv.buyer_name, inv.seller_name = m.group(1).strip(), m.group(2).strip()
+    for line in lines:
+        parts = re.split(r"统一社会信用代码\s*/\s*纳税人识别号[:：]", line)
+        if len(parts) == 3:
+            inv.buyer_tax_id, inv.seller_tax_id = (p.strip() or None for p in parts[1:])
+            break
+    if m := re.search(rf"合\s*计\s*[¥￥]\s*{MONEY}\s*[¥￥]\s*{MONEY}", text):
+        inv.amount_cents, inv.tax_cents = _money(m.group(1)), _money(m.group(2))
+    inv.total_cents = _money(_first(rf"（小写）\s*[¥￥]\s*{MONEY}", text))
+    if m := re.search(r"\n备\s*\n注\s*\n(.*?)(?=^(?:开票人|收款人)|\Z)", text, re.S | re.M):
+        inv.face_remark = m.group(1).strip() or None
+
+
+def _parse_kv(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
+    inv.buyer_name = _first(r"购买方名称[:：]\s*(.+)", text)
+    inv.seller_name = _first(r"销售方名称[:：]\s*(.+)", text)
+    inv.buyer_tax_id = _first(r"购买方纳税人识别号[:：]\s*(\S+)", text)
+    inv.seller_tax_id = _first(r"销售方纳税人识别号[:：]\s*(\S+)", text)
+    inv.tax_cents = _money(_first(rf"^税额[:：]\s*[¥￥]?{MONEY}", text, re.M))
+    inv.total_cents = _money(_first(rf"价税合计[:：]\s*[¥￥]?{MONEY}", text))
+    header = next((ln.split("|") for ln in lines if ln.startswith("项目名称|")), None)
+    if header and "金额" in header:
+        col = header.index("金额")
+        rows = [ln.split("|") for ln in lines if ln.startswith("*") and "|" in ln]
+        if rows and all(len(r) > col for r in rows):
+            inv.amount_cents = sum(_money(r[col]) for r in rows)
+
+
+def _parse_legacy(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
+    """2017–2020 年的增值税电子普通发票：标签与值在文本层中分开，按值的形态和先后顺序识别。"""
+    for i, line in enumerate(lines):
+        if re.fullmatch(r"\d{8}", line) and i and re.fullmatch(r"\d{10}|\d{12}", lines[i - 1]):
+            inv.invoice_code, inv.invoice_no = lines[i - 1], line
+            break
+    parties = [(lines[i - 1], ln) for i, ln in enumerate(lines) if i and USCC.match(ln)]
+    if len(parties) >= 2:
+        (inv.buyer_name, inv.buyer_tax_id), (inv.seller_name, inv.seller_tax_id) = parties[:2]
+        inv.notes.append("旧版版式：购买方、销售方按版面先后顺序识别")
+    for line in lines:
+        if m := re.fullmatch(rf"[¥￥]{MONEY}\s+[¥￥]{MONEY}", line):
+            inv.amount_cents, inv.tax_cents = _money(m.group(1)), _money(m.group(2))
+    singles = [m.group(1) for ln in lines if (m := re.fullmatch(rf"[¥￥]{MONEY}", ln))]
+    if singles:
+        inv.total_cents = _money(singles[-1])
+
+
+# ---------- OFD ----------
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_ofd(inv: ParsedInvoice, z: zipfile.ZipFile) -> None:
+    tag_files = [n for n in z.namelist() if n.endswith("CustomTag.xml")]
+    if not tag_files:
+        # 没有语义标签的 OFD：退回到按全部文字解析
+        text = "\n".join(t.strip() for n in z.namelist() if n.endswith(".xml")
+                         for t in ET.fromstring(z.read(n)).itertext() if t.strip())
+        _parse_text(inv, text)
+        inv.notes.append("OFD 中没有发票语义标签，按文字内容识别")
+        return
+    inv.layout = "ofd"
+    texts: dict[str, str] = {}
+    for n in z.namelist():
+        if n.endswith("Content.xml"):
+            for obj in ET.fromstring(z.read(n)).iter():
+                if _local(obj.tag) == "TextObject":
+                    texts[obj.get("ID")] = "".join(t for c in obj if _local(c.tag) == "TextCode" for t in [c.text or ""])
+    tags: dict[str, list[str]] = {}
+    for el in ET.fromstring(z.read(tag_files[0])).iter():
+        refs = [r.text.strip() for r in el if _local(r.tag) == "ObjectRef" and r.text]
+        if refs:
+            tags.setdefault(_local(el.tag), []).append("".join(texts.get(r, "") for r in refs).strip())
+
+    def one(name):
+        return (tags.get(name) or [None])[0] or None
+
+    def amount(name):
+        v = one(name)
+        return _money(re.sub(r"[¥￥\s]", "", v)) if v else None
+
+    inv.invoice_no = (one("InvoiceNo") or "").replace(" ", "") or None
+    inv.invoice_code = one("InvoiceCode")
+    inv.issue_date = _date(one("IssueDate") or "")
+    inv.buyer_name, inv.buyer_tax_id = one("BuyerName"), one("BuyerTaxID")
+    inv.seller_name, inv.seller_tax_id = one("SellerName"), one("SellerTaxID")
+    inv.items = [re.sub(r"\s+", "", t) for t in tags.get("Item", []) if t]
+    inv.amount_cents = amount("TaxExclusiveTotalAmount")
+    inv.tax_cents = amount("TaxTotalAmount")
+    inv.total_cents = amount("TaxInclusiveTotalAmount")
+    inv.face_remark = one("Note")
+    inv.total_upper = _upper("".join(texts.values()))
+    inv.invoice_type = _type("".join(texts.values()))  # 票名通常在模板页的文字里
+    # OFD.xml 的元数据与版面文字互相印证
+    meta = {}
+    root = ET.fromstring(z.read("OFD.xml"))
+    for el in root.iter():
+        if _local(el.tag) == "CustomData":
+            meta[el.get("Name")] = (el.text or "").strip()
+    if meta.get("发票号码") and meta["发票号码"] != inv.invoice_no:
+        inv.issues.append(f"OFD 元数据发票号码 {meta['发票号码']} 与票面 {inv.invoice_no} 不一致")
+    for key, val in (("合计金额", inv.amount_cents), ("合计税额", inv.tax_cents)):
+        if meta.get(key) and val is not None and _money(meta[key]) != val:
+            inv.issues.append(f"OFD 元数据{key} {meta[key]} 与票面 {fmt(val)} 不一致")
+
+
+# ---------- 入口：解析与校验 ----------
+
+def _validate(inv: ParsedInvoice) -> None:
+    for label, value in (("发票号码", inv.invoice_no), ("开票日期", inv.issue_date), ("销售方名称", inv.seller_name),
+                         ("价税合计", inv.total_cents)):
+        if value is None:
+            inv.issues.append(f"未识别到{label}")
+    if inv.invoice_no and not (len(inv.invoice_no) == 20 or (len(inv.invoice_no) == 8 and inv.invoice_code)):
+        inv.issues.append(f"发票号码格式不符：{inv.invoice_no}（数电票为 20 位；旧版为 8 位号码加 10/12 位代码）")
+    if inv.total_cents is not None:
+        if inv.amount_cents is None or inv.tax_cents is None:
+            inv.issues.append("未识别到金额或税额，无法核对价税合计")
+        elif inv.amount_cents + inv.tax_cents != inv.total_cents:
+            inv.issues.append(f"金额 {fmt(inv.amount_cents)} + 税额 {fmt(inv.tax_cents)} ≠ 价税合计 {fmt(inv.total_cents)}")
+        if inv.total_upper:
+            try:
+                if upper_to_cents(inv.total_upper) != inv.total_cents:
+                    inv.issues.append(f"大写金额“{inv.total_upper}”与小写 {fmt(inv.total_cents)} 不一致")
+            except ValueError as e:
+                inv.issues.append(f"大写金额无法解析：{e}")
+        else:
+            inv.notes.append("未识别到大写金额，只核对了金额与税额")
+        if inv.total_cents < 0:
+            m = re.search(r"被红冲蓝字\S*?(?:发票号码|号码)[:：]?\s*(\d{8,20})", inv.face_remark or "")
+            inv.red_of = m.group(1) if m else None
+            inv.notes.append("红字发票（价税合计为负数）")
+    if not inv.items:
+        inv.notes.append("未识别到项目名称")
+    if not inv.invoice_type:
+        inv.notes.append("未识别到发票类型（专票/普票）")
+
+
+MAX_BYTES = 10 * 1024 * 1024        # 单个文件上限
+MAX_UNZIPPED = 50 * 1024 * 1024     # OFD 解压后总量上限，防压缩炸弹
+
+
+def parse_bytes(name: str, data: bytes) -> ParsedInvoice:
+    inv = ParsedInvoice(file_name=name, sha256=hashlib.sha256(data).hexdigest(), layout="unknown")
+    if len(data) > MAX_BYTES:
+        inv.issues.append(f"文件超过 {MAX_BYTES // 1024 // 1024} MB")
+        return inv
+    try:
+        if data[:4] == b"PK\x03\x04":
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                if sum(i.file_size for i in z.infolist()) > MAX_UNZIPPED:
+                    inv.issues.append("OFD 解压后体积异常，未解析")
+                    return inv
+                _parse_ofd(inv, z)
+        elif data[:5] == b"%PDF-":
+            from pypdf import PdfReader  # 只有导入 PDF 时才需要
+            _parse_text(inv, "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages))
+        else:
+            inv.issues.append("不是 PDF 或 OFD 文件")
+            return inv
+    except Exception as e:  # 外部文件格式千奇百怪，任何解析异常都转成问题，交给人复核
+        inv.issues.append(f"文件无法解析：{type(e).__name__}: {e}")
+        return inv
+    _validate(inv)
+    return inv
+
+
+def parse_text(text: str, name: str = "text") -> ParsedInvoice:
+    """直接解析已提取的票面文字（测试与排查用）。"""
+    inv = ParsedInvoice(file_name=name, sha256=hashlib.sha256(text.encode()).hexdigest(), layout="unknown")
+    _parse_text(inv, text)
+    _validate(inv)
+    return inv
+
+
+def parse_file(path: Path) -> ParsedInvoice:
+    return parse_bytes(path.name, path.read_bytes())
+
+
+def collect(paths: list[str]) -> list[Path]:
+    out = []
+    for p in map(Path, paths):
+        out += sorted(f for f in p.iterdir() if f.suffix.lower() in SUFFIXES) if p.is_dir() else [p]
+    return out
+
+
+# ---------- 入库 ----------
+
+def _content(inv: ParsedInvoice) -> dict:
+    return {"issue_date": inv.issue_date, "seller": inv.seller_name, "item": inv.item_summary,
+            "amount_cents": inv.total_cents}
+
+
+def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedInvoice], *,
+                 commit: bool = False, accept_buyer_mismatch: bool = False) -> list[dict]:
+    """逐张判定：imported / duplicate / conflict / rejected。commit=False 时只预览，不写库。"""
+    company = conn.execute("SELECT name, short_name FROM companies WHERE company_id=?", (company_id,)).fetchone()
+    if not company:
+        raise ValueError(f"企业 {company_id} 不存在")
+    results, seen = [], set()
+    conn.execute("BEGIN")
+    try:
+        for inv in parsed:
+            r = {"file": inv.file_name, "invoice_id": inv.invoice_id, "issues": list(inv.issues), "notes": inv.notes}
+            if not inv.issues and inv.buyer_name not in (company["name"], company["short_name"]):
+                msg = f"购买方“{inv.buyer_name}”不是 {company['name']}"
+                (r["notes"] if accept_buyer_mismatch else r["issues"]).append(msg)
+            existing = conn.execute("SELECT issue_date, seller, item, amount_cents FROM invoices "
+                                    "WHERE company_id=? AND invoice_id=?", (company_id, inv.invoice_id)).fetchone()
+            if not r["issues"] and inv.total_cents is not None and inv.total_cents < 0:
+                blue = inv.red_of and conn.execute(
+                    "SELECT 1 FROM invoices WHERE company_id=? AND (invoice_id=? OR invoice_id LIKE ?)",
+                    (company_id, inv.red_of, f"%-{inv.red_of}")).fetchone()
+                r["notes"].append(f"冲销蓝字发票 {inv.red_of}" if blue else
+                                  f"库内找不到对应的蓝字发票{'（票面写明 ' + inv.red_of + '）' if inv.red_of else ''}，请复核")
+            if r["issues"]:
+                r["status"] = "rejected"
+            elif inv.invoice_id in seen or (existing and dict(existing) == _content(inv)):
+                r["status"] = "duplicate"
+            elif existing:
+                r["status"] = "conflict"
+                r["issues"].append(f"库内已有同号发票，内容不同：{dict(existing)}")
+            else:
+                r["status"] = "imported" if commit else "would_import"
+                now = datetime.now().isoformat(timespec="seconds")
+                c = _content(inv)
+                conn.execute("INSERT INTO invoices (company_id, invoice_id, issue_date, seller, item, amount_cents, "
+                             "updated_at) VALUES (?,?,?,?,?,?,?)",
+                             (company_id, inv.invoice_id, c["issue_date"], c["seller"], c["item"], c["amount_cents"], now))
+                conn.execute("INSERT INTO invoice_sources (company_id, invoice_id, sha256, file_name, layout, "
+                             "parsed_json, imported_at) VALUES (?,?,?,?,?,?,?)",
+                             (company_id, inv.invoice_id, inv.sha256, inv.file_name, inv.layout,
+                              json.dumps(inv.view(), ensure_ascii=False), now))
+            seen.add(inv.invoice_id)
+            results.append(r)
+        conn.execute("COMMIT" if commit else "ROLLBACK")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    return results
+
+
+def require_write(conn: sqlite3.Connection, user_id: str, company_id: str) -> None:
+    """导入会新增发票，按“可查看并修改”权限把关。"""
+    row = conn.execute("SELECT level FROM permissions WHERE user_id=? AND company_id=?", (user_id, company_id)).fetchone()
+    if not row or row["level"] != "write":
+        raise PermissionError(f"{user_id} 对 {company_id} 没有修改权限，不能导入发票")
+
+
+def record_import_event(conn: sqlite3.Connection, session_id: str, company_id: str, results: list[dict],
+                        parsed: list[ParsedInvoice]) -> str | None:
+    """把导入结果作为系统事件写进会话，模型下一轮能看到“刚导入了哪些票”。事件不算用户原话，不构成修改授权。"""
+    done = [p for r, p in zip(results, parsed) if r["status"] == "imported"]
+    if not done:
+        return None
+    total = sum(p.total_cents for p in done)
+    text = (f"操作员通过导入功能新增了 {len(done)} 张发票（价税合计 {fmt(total)} 元，用途与备注为空）："
+            + "；".join(f"{p.invoice_id} {p.issue_date} {fmt(p.total_cents)} 元" for p in done)
+            + "。具体数据以查询工具为准。")
+    conn.execute("INSERT INTO messages (session_id, company_id, role, content, created_at) VALUES (?,?,?,?,?)",
+                 (session_id, company_id, "event", text, datetime.now().isoformat(timespec="seconds")))
+    return text

@@ -84,6 +84,12 @@ table.data td.num { text-align: right; font-variant-numeric: tabular-nums; }
 form.rule { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 12px; }
 form.rule textarea { grid-column: 1 / -1; height: 70px; }
 form.rule .full { grid-column: 1 / -1; }
+.drop { border: 2px dashed var(--line); border-radius: 10px; padding: 18px 12px; text-align: center; color: var(--muted); cursor: pointer; margin-bottom: 10px; }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.drop input { display: none; }
+.imp .issue { color: var(--bad); font-size: 12px; } .imp .note { color: var(--muted); font-size: 12px; }
+.imp dl { display: grid; grid-template-columns: 88px 1fr; gap: 2px 8px; margin: 6px 0 0; font-size: 12px; }
+.imp dt { color: var(--muted); } .imp dd { margin: 0; word-break: break-all; }
 @media (max-width: 700px) { .welcome .grid { grid-template-columns: 1fr; } }
 @media (max-width: 1100px) {
   main { grid-template-columns: 1fr; height: auto; }
@@ -129,10 +135,12 @@ form.rule .full { grid-column: 1 / -1; }
     <div class="tabs">
       <button data-tab="run" class="on">运行记录</button>
       <button data-tab="data">当前数据</button>
+      <button data-tab="import">导入发票</button>
       <button data-tab="rules">规则</button>
     </div>
     <div class="pane" id="pane-run"><p class="muted">发送消息后，这里显示本轮的模型输入、选用的记忆与规则、工具调用及结果。</p></div>
     <div class="pane" id="pane-data" hidden></div>
+    <div class="pane" id="pane-import" hidden></div>
     <div class="pane" id="pane-rules" hidden></div>
   </section>
 </main>
@@ -195,8 +203,8 @@ async function init() {
 
 function showTab(tab) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  for (const t of ["run", "data", "rules"]) $(`#pane-${t}`).hidden = t !== tab;
-  if (tab === "data") renderData(); if (tab === "rules") renderRules();
+  for (const t of ["run", "data", "import", "rules"]) $(`#pane-${t}`).hidden = t !== tab;
+  if (tab === "data") renderData(); if (tab === "rules") renderRules(); if (tab === "import") renderImport();
 }
 
 async function newSession() {
@@ -222,6 +230,7 @@ const SCENES = [
 ];
 
 async function renderWelcome() {
+  const old = document.querySelector("#log .welcome");
   const ov = await api(`/api/overview?user_id=${state.user}&company_id=${state.company}`);
   const name = state.meta.companies.find((c) => c.company_id === state.company)?.short_name || state.company;
   let stats = `<p class="muted">${esc(state.user)} 对 ${esc(name)} 无权访问：查询会被拒绝，系统不会把它当作“没有记录”回答 0。</p>`;
@@ -240,7 +249,7 @@ async function renderWelcome() {
   div.innerHTML = `<div class="card" style="background:var(--panel)"><b>${esc(name)}</b> · ${esc(state.user)}（${esc(permText())}）${stats}
     <div class="grid">${SCENES.map(([title, qs]) => `<div class="scene"><b>${title}</b>${qs.map((q) => `<button class="ask">${esc(q)}</button>`).join("")}</div>`).join("")}</div></div>`;
   div.onclick = (e) => { if (e.target.classList.contains("ask")) { $("#input").value = e.target.textContent; $("#input").focus(); } };
-  $("#log").appendChild(div);
+  if (old) old.replaceWith(div); else $("#log").appendChild(div);
 }
 
 function addMsg(role, text, meta) {
@@ -337,12 +346,13 @@ async function showRun(id) {
 }
 
 async function renderData() {
-  const [inv, ops, ov] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`),
-    api(`/api/operations?company_id=${state.company}`), api(`/api/overview?user_id=${state.user}&company_id=${state.company}`)]);
+  const [inv, ops, ov, have] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`),
+    api(`/api/operations?company_id=${state.company}`), api(`/api/overview?user_id=${state.user}&company_id=${state.company}`),
+    api(`/api/invoice-months?company_id=${state.company}`)]);
   const summary = ov.forbidden ? `<p class="muted">${state.user} 无权访问 ${state.company}。</p>` : `<table class="data" style="margin-bottom:14px">
     <tr><th>月份</th><th>发票</th><th>发票总额</th><th>银行收入</th><th>银行支出</th></tr>${ov.months.map((m) =>
     `<tr><td>${m.month}</td><td>${m.invoice_count}</td><td class="num">${m.invoice_total}</td><td class="num">${m.bank_income}</td><td class="num">${m.bank_expense}</td></tr>`).join("")}</table>`;
-  const months = ["2026-07", "2026-08", "2026-09"].map((m) => `<option ${m === state.month ? "selected" : ""}>${m}</option>`).join("");
+  const months = [...new Set(["2026-07", "2026-08", "2026-09", ...have, state.month])].sort().map((m) => `<option ${m === state.month ? "selected" : ""}>${m}</option>`).join("");
   $("#pane-data").innerHTML = `<h2>${state.company} 月度汇总（程序计算）</h2>${summary}<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><b>${state.company} 发票</b>
     <select id="month" style="width:auto">${months}</select><span class="muted" style="font-size:12px">库内当前数据（非原始 Excel）</span></div>
     ${inv.length ? `<table class="data"><tr><th>编号</th><th>日期</th><th>金额</th><th>用途</th><th>备注</th><th>版</th></tr>${inv.map((i) =>
@@ -353,6 +363,87 @@ async function renderData() {
       <div class="muted" style="font-size:12px">${o.created_at} · ${o.user_id} · 运行 ${o.run_id}</div>
       <div style="font-size:12px">用途：${esc(o.before_json.purpose || "（空）")} → <b>${esc(o.after_json?.purpose || "（空）")}</b>；备注：${esc(o.before_json.remark || "（空）")} → <b>${esc(o.after_json?.remark || "（空）")}</b></div></div>`).join("") : `<p class="muted">暂无保存操作。</p>`}`;
   $("#month").onchange = (e) => { state.month = e.target.value; renderData(); };
+}
+
+const IMPORT_STATUS = { would_import: ["可导入", "ok"], imported: ["已导入", "ok"], duplicate: ["已存在，跳过", ""],
+                        conflict: ["同号冲突", "bad"], rejected: ["未通过校验", "bad"] };
+const imp = { files: [], results: null };
+
+function readB64(file) {
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result.slice(r.result.indexOf(",") + 1));
+    r.onerror = () => fail(r.error);
+    r.readAsDataURL(file);
+  });
+}
+
+async function uploadInvoices(commit) {
+  const body = { user_id: state.user, company_id: state.company, commit, session_id: state.sid,
+                 accept_buyer_mismatch: $("#impAccept")?.checked || false,
+                 files: await Promise.all(imp.files.map(async (f) => ({ name: f.name, data: await readB64(f) }))) };
+  $("#impMsg").textContent = commit ? "导入中…" : "解析中…";
+  try {
+    const res = await api("/api/invoice-files", { method: "POST", body: JSON.stringify(body) });
+    imp.results = res.results;
+    if (res.event) {
+      const ev = document.createElement("div"); ev.className = "event"; ev.textContent = "[导入] " + res.event;
+      $("#log").appendChild(ev); $("#log").scrollTop = $("#log").scrollHeight;
+      renderWelcome();
+    }
+    const n = imp.results.filter((r) => r.status === "imported").length;
+    $("#impMsg").textContent = commit ? `已导入 ${n} 张。导入后可在对话中查询，用途需另行补充。` : "以下为预览，尚未写入。";
+    if (commit && n) {
+      imp.files = [];
+      const first = imp.results.find((r) => r.status === "imported");
+      state.month = first.parsed.issue_date.slice(0, 7);
+    }
+  } catch (e) { $("#impMsg").textContent = "失败：" + e.message; imp.results = null; }
+  renderImportResults();
+}
+
+function renderImportResults() {
+  const ok = imp.results?.some((r) => r.status === "would_import");
+  $("#impCommit").disabled = !ok;
+  $("#impResults").innerHTML = (imp.results || []).map((r) => {
+    const p = r.parsed, [label, cls] = IMPORT_STATUS[r.status];
+    const row = (k, v) => v ? `<dt>${k}</dt><dd>${esc(v)}</dd>` : "";
+    return `<div class="card imp"><div><b>${esc(r.invoice_id || r.file)}</b> <span class="chip ${cls}">${label}</span></div>
+      <div class="muted" style="font-size:12px">${esc(r.file)} · ${esc(p.invoice_type || "类型未识别")} · ${esc(p.layout)}</div>
+      ${r.issues.map((x) => `<div class="issue">✕ ${esc(x)}</div>`).join("")}${r.notes.map((x) => `<div class="note">· ${esc(x)}</div>`).join("")}
+      <details><summary class="muted" style="font-size:12px">票面字段</summary><dl>
+        ${row("开票日期", p.issue_date)}${row("销售方", p.seller_name)}${row("销售方税号", p.seller_tax_id)}
+        ${row("购买方", p.buyer_name)}${row("购买方税号", p.buyer_tax_id)}${row("项目", p.items.join("；"))}
+        ${row("金额", p.amount)}${row("税额", p.tax)}${row("价税合计", p.total)}${row("大写", p.total_upper)}${row("票面备注", p.face_remark)}
+      </dl></details></div>`;
+  }).join("");
+}
+
+function renderImport() {
+  const can = permText() === "可查看并修改";
+  $("#pane-import").innerHTML = `<h2>导入发票文件到 ${state.company}</h2>
+    ${can ? "" : `<p class="banner" style="margin:0 0 10px">${state.user} 对 ${state.company} ${esc(permText())}，不能导入。</p>`}
+    <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd"></label>
+    <div id="impList" class="muted" style="font-size:12px;margin-bottom:8px"></div>
+    ${state.meta.allow_foreign_buyer ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impAccept" style="width:auto">
+      允许购买方不是本企业（测试模式，FH_ALLOW_FOREIGN_BUYER=1）</label>` : ""}
+    <div style="display:flex;gap:8px;margin:8px 0"><button id="impPreview" ${can ? "" : "disabled"}>解析预览</button>
+      <button class="primary" id="impCommit" disabled>确认导入</button></div>
+    <div class="muted" id="impMsg" style="font-size:12px;margin-bottom:8px">程序解析票面并核对：金额 + 税额 = 价税合计、大写与小写一致、号码格式。任何一项对不上都不会导入。</div>
+    <div id="impResults"></div>`;
+  const setFiles = (list) => {
+    imp.files = [...list].filter((f) => /\.(pdf|ofd)$/i.test(f.name)); imp.results = null; renderImportResults();
+    $("#impList").textContent = imp.files.length ? `已选 ${imp.files.length} 个：${imp.files.map((f) => f.name).join("、")}` : "";
+  };
+  const drop = $("#impDrop");
+  $("#impFile").onchange = (e) => setFiles(e.target.files);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+  drop.ondragleave = () => drop.classList.remove("over");
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); setFiles(e.dataTransfer.files); };
+  $("#impPreview").onclick = () => imp.files.length ? uploadInvoices(false) : ($("#impMsg").textContent = "请先选择文件。");
+  $("#impCommit").onclick = () => uploadInvoices(true);
+  if (imp.files.length) $("#impList").textContent = `已选 ${imp.files.length} 个：${imp.files.map((f) => f.name).join("、")}`;
+  renderImportResults();
 }
 
 async function renderRules() {
