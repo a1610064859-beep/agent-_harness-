@@ -48,6 +48,10 @@ class Scope:
     memory_refs: list[str] = field(default_factory=list)  # 本轮选用的记忆
 
 
+# 用户在来源原话里明确表示暂不保存：守卫只用来拒绝写入，不用来判断意图或放行
+SAVE_NEGATION = re.compile(r"(别|不要|不用|不必|勿|先不|暂不|暂时不|还不)(急着?)?(保存|写入|提交)")
+
+
 def _norm(text: str) -> str:
     return re.sub(r"[\s\"'“”‘’「」『』《》:：,，.。!！?？;；、]", "", text or "")
 
@@ -100,9 +104,59 @@ class Toolbox:
                                          f"“{LEVEL_TEXT[level]}”，不能{'修改' if need == 'write' else '查看'}。"
                                          "这不是“没有记录”，不能回答为零。")
 
+    def _scope_user_messages(self) -> list[sqlite3.Row]:
+        """可作为出处的用户原话：本会话中当前企业最近连续的一段（切换企业前的话不再作数），本轮用户消息总算在内。"""
+        rows = self.conn.execute("SELECT id, role, company_id, content FROM messages WHERE session_id=? ORDER BY id DESC",
+                                 (self.scope.session_id,)).fetchall()
+        out, latest_seen = [], False
+        for r in rows:
+            if r["role"] == "user" and not latest_seen:
+                latest_seen = True  # 本轮的话：可能正是它要求切换企业
+                out.append(r)
+                continue
+            if r["company_id"] != self.scope.company_id:
+                break
+            if r["role"] == "user":
+                out.append(r)
+        return out[::-1]
+
     def _session_user_texts(self) -> list[str]:
-        return [r["content"] for r in self.conn.execute(
-            "SELECT content FROM messages WHERE session_id=? AND role='user' ORDER BY id", (self.scope.session_id,))]
+        return [r["content"] for r in self._scope_user_messages()]
+
+    def _named_invoices(self, text: str) -> set[str]:
+        norm = _norm(text).upper()
+        ids = [r["invoice_id"] for r in self.conn.execute("SELECT invoice_id FROM invoices WHERE company_id=?",
+                                                          (self.scope.company_id,))]
+        return {i for i in ids if i in norm or ("-" in i and i.split("-", 1)[1] in norm)}
+
+    def _authorize_write(self, invoice_id: str, user_quote: str, changes: dict) -> int:
+        """修改授权绑定到当前企业、发票、字段值和一条来源原话；返回来源消息 id。"""
+        msgs = self._scope_user_messages()
+        quote = _norm(user_quote)
+        sources = [m for m in msgs if quote and quote in _norm(m["content"])]
+        if not sources:
+            raise ToolError("NOT_AUTHORIZED", "user_quote 必须逐字摘自用户在本次会话、当前企业下要求修改的一句原话。"
+                                              "之前会话的草稿、切换企业前的话或模型自己的推断都不能作为修改授权，请向用户确认。")
+        src = sources[-1]
+        if SAVE_NEGATION.search(_norm(src["content"])):
+            raise ToolError("NOT_AUTHORIZED", "用户在这句原话里表示暂不保存，不能据此修改。请等用户明确要求保存。")
+        basis, named = [src], self._named_invoices(src["content"])
+        if not named:
+            # 原话没点名发票（如“可以了，保存吧”）：对象取自它之前最近一条点名了发票的用户原话
+            earlier = [m for m in msgs if m["id"] < src["id"] and self._named_invoices(m["content"])]
+            if earlier:
+                basis.append(earlier[-1])
+                named = self._named_invoices(earlier[-1]["content"])
+        if invoice_id not in named:
+            raise ToolError("INVOICE_NOT_REQUESTED", f"用户原话要求修改的是 {'、'.join(sorted(named)) or '（未点名发票）'}，"
+                                                     f"不是 {invoice_id}。请按用户点名的发票操作，或向用户确认。",
+                            named_invoices=sorted(named))
+        text = _norm("".join(m["content"] for m in basis))
+        for k, v in changes.items():
+            if _norm(v) not in text:
+                raise ToolError("CONTENT_NOT_FROM_USER", f"{'用途' if k == 'purpose' else '备注'}“{v}”没有出现在用户"
+                                                         "要求修改的原话中。请使用用户给出的原文，不能根据销售方或项目名称补写。")
+        return src["id"]
 
     def _check_month(self, month: str) -> str:
         if not month or not MONTH_RE.match(month):
@@ -252,23 +306,18 @@ class Toolbox:
             raise ToolError("BAD_ARG", "只能修改用途（purpose）或备注（remark），至少提供一项。")
         if any(not v for v in changes.values()):
             raise ToolError("BAD_ARG", "用途和备注只能补充或更正为非空内容。")
-        user_texts = self._session_user_texts()
-        joined = _norm("".join(user_texts))
-        if not user_quote or _norm(user_quote) not in joined:
-            raise ToolError("NOT_AUTHORIZED", "user_quote 必须是用户在本次会话中要求修改的原话。之前会话的草稿"
-                                              "或模型自己的推断不能作为修改授权，请向用户确认。")
-        for k, v in changes.items():
-            if _norm(v) not in joined:
-                raise ToolError("CONTENT_NOT_FROM_USER", f"{'用途' if k == 'purpose' else '备注'}“{v}”没有出现在用户"
-                                                         "的原话中。请使用用户给出的原文，不能根据销售方或项目名称补写。")
+        source_id = self._authorize_write(invoice_id, user_quote, changes)
         cid = self.scope.company_id
-        key = hashlib.sha256(json.dumps([self.scope.session_id, cid, invoice_id, changes], sort_keys=True,
+        # 同一句原话的重试才算重复；用户之后的新要求（包括改回旧值）是新的操作
+        key = hashlib.sha256(json.dumps([self.scope.session_id, cid, invoice_id, changes, source_id], sort_keys=True,
                                         ensure_ascii=False).encode()).hexdigest()
         prior = self.conn.execute("SELECT * FROM operations WHERE idempotency_key=?", (key,)).fetchone()
         if prior:
+            current = self._read_invoice(cid, invoice_id)
             return {"duplicate": True, "op_id": prior["op_id"], "status": prior["status"],
-                    "message": "这项修改在本会话中已经执行过，没有再次写入。",
-                    "current": _invoice_view(self._read_invoice(cid, invoice_id))}
+                    "current_matches_request": all((current[k] or "") == v for k, v in changes.items()),
+                    "message": "用户这句原话要求的修改已经执行过，没有再次写入。",
+                    "current": _invoice_view(current)}
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             before = self._read_invoice(cid, invoice_id)
@@ -549,14 +598,45 @@ def tool_specs(variant: str = "baseline") -> list[dict]:
 TOOL_NAMES = {t["function"]["name"] for t in TOOL_SPECS + MODEL_RULES_SPECS}
 
 
+_JSON_TYPES = {"string": str, "boolean": bool, "array": list}
+
+
+def _check_args(spec: dict, args: dict) -> list[str]:
+    """按工具声明的 JSON Schema 检查参数：多余字段、缺少必填、类型与枚举。"""
+    params = spec["function"]["parameters"]
+    props, problems = params["properties"], []
+    for k in params.get("required", []):
+        if args.get(k) is None:
+            problems.append(f"缺少必填参数 {k}")
+    for k, v in args.items():
+        if k not in props:
+            problems.append(f"没有参数 {k}")
+            continue
+        p = props[k]
+        if v is None or isinstance(v, _JSON_TYPES[p["type"]]):
+            if p["type"] == "array" and v is not None and not all(isinstance(x, str) for x in v):
+                problems.append(f"{k} 必须是字符串数组")
+            if "enum" in p and v is not None and v not in p["enum"]:
+                problems.append(f"{k} 只能是 {p['enum']} 之一")
+        else:
+            problems.append(f"{k} 应为 {p['type']}，实际是 {type(v).__name__}")
+    return problems
+
+
 def dispatch(box: Toolbox, name: str, raw_args: str | dict, variant: str = "baseline") -> dict:
     """执行一次工具调用，统一返回 {ok, data | error}。参数错误和守卫拒绝都作为结果交还模型。"""
-    if name not in {s["function"]["name"] for s in tool_specs(variant)}:
+    specs = {s["function"]["name"]: s for s in tool_specs(variant)}
+    if name not in specs:
         return {"ok": False, "error": {"code": "UNKNOWN_TOOL", "message": f"没有工具 {name}"}}
     try:
         args = json.loads(raw_args or "{}") if isinstance(raw_args, str) else dict(raw_args)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": {"code": "BAD_JSON", "message": "参数不是合法 JSON"}}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {"ok": False, "error": {"code": "BAD_JSON", "message": "参数不是合法 JSON 对象"}}
+    if not isinstance(args, dict):
+        return {"ok": False, "error": {"code": "BAD_JSON", "message": "参数必须是 JSON 对象"}}
+    if problems := _check_args(specs[name], args):
+        return {"ok": False, "error": {"code": "BAD_ARG", "message": "；".join(problems)}}
+    args = {k: v for k, v in args.items() if v is not None}  # 可选参数传 null 视同未传
     try:
         return {"ok": True, "data": getattr(box, name)(**args)}
     except ToolError as e:

@@ -75,7 +75,7 @@ scripts/setup.sh
 ## 验证
 
 ```bash
-python -m pytest -q                  # 67 项确定性测试，不调用模型
+python -m pytest -q                  # 88 项确定性测试，不调用模型
 python -m evals.run --repeat 3       # 24 个多轮案例，真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录

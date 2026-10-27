@@ -11,7 +11,7 @@ from datetime import datetime
 from . import context, tools
 from .config import Settings
 from .llm import LLM, LLMError
-from .runlog import RunLog
+from .runlog import RunLog, redact
 
 CITATION = re.compile(r"《([^》]+)》\s*([\d.]+)\s*版")
 
@@ -53,7 +53,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     scope.run_id = "R-" + uuid.uuid4().hex[:12]
     log = RunLog(conn, scope.run_id, session_id, scope.user_id, scope.company_id, user_message, llm.model)
     conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) VALUES (?,?,?,?,?,?)",
-                 (session_id, scope.company_id, "user", user_message, scope.run_id, _now()))
+                 (session_id, scope.company_id, "user", redact(user_message), scope.run_id, _now()))
     box = tools.Toolbox(conn, scope)
 
     system, selected = context.build_system(conn, scope, settings.variant)
@@ -74,15 +74,31 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
             if not out.message.get("tool_calls"):
                 reply = out.message.get("content", "").strip()
                 break
+            switched_from, batch = None, []
             for call in out.message["tool_calls"]:
                 name, args = call["function"]["name"], call["function"]["arguments"]
                 company_before = scope.company_id
-                result = tools.dispatch(box, name, args, settings.variant)
+                if switched_from:
+                    # 同一批次里排在切换之后的调用是按旧企业决定的，不执行，交回模型按新企业重新判断
+                    result = {"ok": False, "error": {"code": "SKIPPED_AFTER_SWITCH", "message":
+                              f"本批次已从 {switched_from} 切换到 {scope.company_id}，此调用未执行。请按新企业重新决定是否需要。"}}
+                else:
+                    result = tools.dispatch(box, name, args, settings.variant)
+                    if name == "switch_company" and scope.company_id != company_before:
+                        switched_from = company_before
                 calls.append({"tool": name, "args": args, "ok": result["ok"],
                               "error": result.get("error", {}).get("code")})
                 log.step("tool", {"name": name, "arguments": args, "company_id": company_before, "result": result})
-                messages.append({"role": "tool", "tool_call_id": call["id"],
-                                 "content": json.dumps(result, ensure_ascii=False)})
+                batch.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
+            if switched_from:
+                # 切换后重建系统输入与对话历史，旧企业的规则、记忆和本轮此前的查询结果不再带入
+                conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'",
+                             (scope.company_id, scope.run_id))
+                system, new_selected = context.build_system(conn, scope, settings.variant)
+                selected = {**new_selected, "before_switch": {switched_from: selected}}
+                messages = ([{"role": "system", "content": system}]
+                            + context.history(conn, scope, settings.history_chars) + [out.message])
+            messages += batch
         else:
             status = "step_limit"
             reply = "这一轮处理步骤较多，已暂停。已完成的查询和保存都已记录，请告诉我是否继续。"
@@ -90,12 +106,18 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
         status = "llm_error"
         reply = f"模型服务暂时不可用，这一轮没有完成。（{e}）已执行的操作以运行记录为准。"
         log.step("error", {"message": str(e)})
+    except tools.SimulatedCrash:
+        raise  # 故障演示：保留“提交后、回读前中断”的现场，由下次启动恢复
+    except Exception as e:  # 程序缺陷也要把这一轮收尾，不能让运行记录停在 running
+        status = "error"
+        reply = "处理时出现程序错误，这一轮没有完成。已执行的保存以运行记录和数据核对为准。"
+        log.step("error", {"type": type(e).__name__, "message": str(e)})
 
     anomalies = _check_citations(reply, scope.rule_refs)
     # 本轮如切换了企业，用户消息和回复都归到最终企业，旧企业的对话不再带入新企业
     conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'", (scope.company_id, scope.run_id))
     conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) VALUES (?,?,?,?,?,?)",
-                 (session_id, scope.company_id, "assistant", reply, scope.run_id, _now()))
+                 (session_id, scope.company_id, "assistant", redact(reply), scope.run_id, _now()))
     selected["rules_cited_by_tools"] = [f"{r['rule_id']} {r['version']}" for r in scope.rule_refs]
     log.finish(reply=reply, status=status, company_id=scope.company_id, selected=selected, usage=usage_total,
                anomalies=anomalies)

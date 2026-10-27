@@ -14,7 +14,7 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _redact(text: str) -> str:
+def redact(text: str) -> str:
     for name in ("LLM_API_KEY", "DEEPSEEK_API_KEY"):
         secret = os.environ.get(name)
         if secret:
@@ -28,28 +28,28 @@ class RunLog:
         self.conn, self.run_id, self.seq = conn, run_id, 0
         conn.execute("INSERT INTO runs (run_id, session_id, user_id, company_id, user_message, status, model, "
                      "started_at) VALUES (?,?,?,?,?,?,?,?)",
-                     (run_id, session_id, user_id, company_id, user_message, "running", model, _now()))
+                     (run_id, session_id, user_id, company_id, redact(user_message), "running", model, _now()))
 
     def step(self, kind: str, payload) -> None:
         self.seq += 1
         self.conn.execute("INSERT INTO run_steps (run_id, seq, kind, payload, created_at) VALUES (?,?,?,?,?)",
-                          (self.run_id, self.seq, kind, _redact(json.dumps(payload, ensure_ascii=False)), _now()))
+                          (self.run_id, self.seq, kind, redact(json.dumps(payload, ensure_ascii=False)), _now()))
 
     def finish(self, *, reply: str, status: str, company_id: str, selected: dict, usage: dict,
                anomalies: list[str]) -> None:
         self.conn.execute("UPDATE runs SET final_reply=?, status=?, company_id=?, selected=?, usage=?, anomalies=?, "
                           "ended_at=? WHERE run_id=?",
-                          (reply, status, company_id, json.dumps(selected, ensure_ascii=False),
-                           json.dumps(usage), json.dumps(anomalies, ensure_ascii=False), _now(), self.run_id))
+                          (redact(reply), status, company_id, redact(json.dumps(selected, ensure_ascii=False)),
+                           json.dumps(usage), redact(json.dumps(anomalies, ensure_ascii=False)), _now(), self.run_id))
 
 
 def load(conn: sqlite3.Connection, run_id: str) -> dict | None:
     run = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
     if not run:
         return None
-    out = dict(run)
+    out = {k: redact(v) if isinstance(v, str) else v for k, v in dict(run).items()}  # 旧库中的记录导出时也过滤
     for k in ("selected", "usage", "anomalies"):
         out[k] = json.loads(out[k])
-    out["steps"] = [{"seq": s["seq"], "kind": s["kind"], "payload": json.loads(s["payload"])}
+    out["steps"] = [{"seq": s["seq"], "kind": s["kind"], "payload": json.loads(redact(s["payload"]))}
                     for s in conn.execute("SELECT * FROM run_steps WHERE run_id=? ORDER BY seq", (run_id,))]
     return out

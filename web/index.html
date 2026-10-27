@@ -231,7 +231,7 @@ const SCENES = [
 
 async function renderWelcome() {
   const old = document.querySelector("#log .welcome");
-  const ov = await api(`/api/overview?user_id=${state.user}&company_id=${state.company}`);
+  const ov = await api(`/api/overview?session_id=${state.sid}`);
   const name = state.meta.companies.find((c) => c.company_id === state.company)?.short_name || state.company;
   let stats = `<p class="muted">${esc(state.user)} 对 ${esc(name)} 无权访问：查询会被拒绝，系统不会把它当作“没有记录”回答 0。</p>`;
   if (!ov.forbidden) {
@@ -291,7 +291,7 @@ async function send() {
 }
 
 async function refreshSide() {
-  const m = await api(`/api/memory?user_id=${state.user}&company_id=${state.company}`);
+  const m = await api(`/api/memory?session_id=${state.sid}`);
   const t = m.task;
   $("#task").innerHTML = t ? `<div class="card"><div>目标：${esc(t.goal || "（未记录）")}</div><div>月份：${esc(t.month || "未确定")}</div>
     <div style="margin-top:4px">${t.pending.map((i) => `<span class="chip warn">${i} 待补</span>`).join("")}${t.done.map((i) => `<span class="chip ok">${i} 已核验</span>`).join("")}</div>
@@ -303,10 +303,10 @@ async function refreshSide() {
     const id = e.target.dataset.edit || e.target.dataset.del; if (!id) return;
     if (e.target.dataset.del) {
       if (!confirm("删除这条记忆？删除后正文会从库中清除。")) return;
-      await api(`/api/memory/${id}?user_id=${state.user}&company_id=${state.company}`, { method: "DELETE" });
+      await api(`/api/memory/${id}?session_id=${state.sid}`, { method: "DELETE" });
     } else {
       const content = prompt("更正为："); if (!content) return;
-      await api(`/api/memory/${id}`, { method: "PATCH", body: JSON.stringify({ user_id: state.user, company_id: state.company, content }) });
+      await api(`/api/memory/${id}`, { method: "PATCH", body: JSON.stringify({ session_id: state.sid, content }) });
     }
     refreshSide();
   };
@@ -315,7 +315,7 @@ async function refreshSide() {
 
 async function showRun(id) {
   showTab("run");
-  const r = await api(`/api/runs/${id}`);
+  const r = await api(`/api/runs/${id}?session_id=${state.sid}`);
   const steps = r.steps.map((s) => {
     const p = s.payload;
     if (s.kind === "llm_input") {
@@ -346,10 +346,15 @@ async function showRun(id) {
 }
 
 async function renderData() {
-  const [inv, ops, ov, have] = await Promise.all([api(`/api/invoices?company_id=${state.company}&month=${state.month}`),
-    api(`/api/operations?company_id=${state.company}`), api(`/api/overview?user_id=${state.user}&company_id=${state.company}`),
-    api(`/api/invoice-months?company_id=${state.company}`)]);
-  const summary = ov.forbidden ? `<p class="muted">${state.user} 无权访问 ${state.company}。</p>` : `<table class="data" style="margin-bottom:14px">
+  const ov = await api(`/api/overview?session_id=${state.sid}`);
+  if (ov.forbidden) {  // 无权访问时不请求、也不展示任何数据表
+    $("#pane-data").innerHTML = `<p class="banner" style="margin:0">${esc(state.user)} 无权访问 ${esc(state.company)}，不显示该企业的数据。</p>`;
+    return;
+  }
+  const q = `session_id=${state.sid}`;
+  const [inv, ops, have] = await Promise.all([api(`/api/invoices?${q}&month=${state.month}`),
+    api(`/api/operations?${q}`), api(`/api/invoice-months?${q}`)]);
+  const summary = `<table class="data" style="margin-bottom:14px">
     <tr><th>月份</th><th>发票</th><th>发票总额</th><th>银行收入</th><th>银行支出</th></tr>${ov.months.map((m) =>
     `<tr><td>${m.month}</td><td>${m.invoice_count}</td><td class="num">${m.invoice_total}</td><td class="num">${m.bank_income}</td><td class="num">${m.bank_expense}</td></tr>`).join("")}</table>`;
   const months = [...new Set(["2026-07", "2026-08", "2026-09", ...have, state.month])].sort().map((m) => `<option ${m === state.month ? "selected" : ""}>${m}</option>`).join("");
@@ -379,7 +384,7 @@ function readB64(file) {
 }
 
 async function uploadInvoices(commit) {
-  const body = { user_id: state.user, company_id: state.company, commit, session_id: state.sid,
+  const body = { session_id: state.sid, commit,
                  accept_buyer_mismatch: $("#impAccept")?.checked || false,
                  files: await Promise.all(imp.files.map(async (f) => ({ name: f.name, data: await readB64(f) }))) };
   $("#impMsg").textContent = commit ? "导入中…" : "解析中…";
@@ -447,7 +452,9 @@ function renderImport() {
 }
 
 async function renderRules() {
-  const rules = await api(`/api/rules?company_id=${state.company}`);
+  let rules;
+  try { rules = await api(`/api/rules?session_id=${state.sid}`); }
+  catch (e) { $("#pane-rules").innerHTML = `<p class="banner" style="margin:0">${esc(e.message)}</p>`; return; }
   const ids = [...new Set(rules.map((r) => r.rule_id))];
   $("#pane-rules").innerHTML = `<h2>新增规则版本（更新 = 新版本，旧版本保留）</h2>
     <form class="rule" id="ruleForm">
@@ -470,14 +477,15 @@ async function renderRules() {
   $("#pane-rules").onclick = async (e) => {
     const b = e.target.closest("button[data-rid]"); if (!b) return;
     if (!confirm(`${b.dataset.st === "disabled" ? "停用" : "启用"} ${b.dataset.rid} ${b.dataset.ver} 版？`)) return;
-    await api(`/api/rules/${b.dataset.rid}/${b.dataset.ver}/status`, { method: "POST", body: JSON.stringify({ status: b.dataset.st }) });
+    try { await api(`/api/rules/${b.dataset.rid}/${b.dataset.ver}/status`, { method: "POST", body: JSON.stringify({ session_id: state.sid, status: b.dataset.st }) }); }
+    catch (err) { alert(err.message); return; }
     renderRules();
   };
   $("#ruleForm").onsubmit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     try {
-      const r = await api("/api/rules", { method: "POST", body: JSON.stringify(f) });
+      const r = await api("/api/rules", { method: "POST", body: JSON.stringify({ ...f, session_id: state.sid }) });
       $("#ruleMsg").textContent = `已新增 ${r.rule_id} ${r.version} 版，生效 ${r.effective_from}`;
       setTimeout(renderRules, 800);
     } catch (err) { $("#ruleMsg").textContent = "失败：" + err.message; }

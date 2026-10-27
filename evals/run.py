@@ -80,16 +80,21 @@ def main(argv=None):
         rows = list(pool.map(lambda j: run_case(j[0], settings, llm, j[1]), jobs))
     for r in rows:
         mark = "PASS" if r["passed"] else "FAIL"
-        print(f"[{mark}] {r['case_id']}#{r['attempt']} {r['title']}" + ("" if r["passed"] else f" → {r['failed_checks']}"))
+        print(f"[{mark}] {r['case_id']}#{r['attempt']} {r['title']}" + ("" if r["passed"] else f" → {r['failed_checks']}")
+              + (f"  ⚠ 规则引用异常 {len(r['anomalies'])} 条" if r["anomalies"] else ""))
     passed = sum(r["passed"] for r in rows)
+    # 异常（回复引用了本轮工具未返回的规则版本）单独统计，不计入通过条件；口径待定，见 docs/reviews
+    anomalies = {f"{r['case_id']}#{r['attempt']}": len(r["anomalies"]) for r in rows if r["anomalies"]}
     usage = {k: sum(r["usage"][k] for r in rows) for k in ("prompt_tokens", "completion_tokens")}
     summary = {"model": llm.model, "today": settings.today.isoformat(), "runs": len(rows), "passed": passed,
                "cases": len(cases), "repeat": args.repeat, "usage": usage,
+               "runs_with_anomalies": anomalies, "anomaly_total": sum(anomalies.values()),
                "by_case": {c.case_id: f"{sum(r['passed'] for r in rows if r['case_id'] == c.case_id)}/{args.repeat}"
                            for c in cases}}
     (out_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n通过 {passed}/{len(rows)}（{len(cases)} 个案例 × {args.repeat} 次）｜模型 {llm.model}｜tokens {usage}")
+    print(f"规则引用异常：{sum(anomalies.values())} 条，涉及 {len(anomalies)} 次运行（不计入通过条件）")
     print(f"明细：{out_dir}")
     return 0 if passed == len(rows) else 1
 

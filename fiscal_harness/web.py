@@ -28,6 +28,7 @@ class Message(BaseModel):
 
 
 class RuleVersion(BaseModel):
+    session_id: str
     rule_id: str
     version: str
     body: str
@@ -38,6 +39,7 @@ class RuleVersion(BaseModel):
 
 
 class RuleStatus(BaseModel):
+    session_id: str
     status: str
 
 
@@ -47,17 +49,14 @@ class UploadedFile(BaseModel):
 
 
 class InvoiceUpload(BaseModel):
-    user_id: str
-    company_id: str
+    session_id: str  # 导入人与企业取自会话；导入成功后在该会话记一条系统事件
     files: list[UploadedFile]
     commit: bool = False
     accept_buyer_mismatch: bool = False
-    session_id: str | None = None  # 导入成功后在该会话记一条系统事件
 
 
 class MemoryEdit(BaseModel):
-    user_id: str
-    company_id: str
+    session_id: str
     content: str | None = None
 
 
@@ -68,6 +67,20 @@ def create_app(settings) -> FastAPI:
 
     def conn():
         return db.connect(settings.db_path)
+
+    def viewer(session_id: str, need: str | None = "read"):
+        """数据接口的身份与企业一律取自会话，不信任请求里自报的用户或企业；权限口径与对话工具相同。"""
+        c = conn()
+        row = c.execute("SELECT user_id, company_id FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "没有该会话")
+        lv = c.execute("SELECT level FROM permissions WHERE user_id=? AND company_id=?",
+                       (row["user_id"], row["company_id"])).fetchone()
+        lv = lv["level"] if lv else "none"
+        if need and (lv == "none" or (need == "write" and lv != "write")):
+            raise HTTPException(403, f"{row['user_id']} 对 {row['company_id']} 的权限是“{LEVEL_TEXT[lv]}”，"
+                                     f"不能{'修改' if need == 'write' else '查看'}")
+        return c, row["user_id"], row["company_id"]
 
     @app.get("/")
     def index():
@@ -114,23 +127,23 @@ def create_app(settings) -> FastAPI:
         return res.__dict__
 
     @app.get("/api/runs")
-    def runs(session_id: str | None = None, limit: int = 30):
-        c = conn()
-        sql, args = "SELECT run_id, session_id, user_id, company_id, user_message, status, started_at FROM runs", []
-        if session_id:
-            sql, args = sql + " WHERE session_id=?", [session_id]
-        return [dict(r) for r in c.execute(sql + " ORDER BY started_at DESC LIMIT ?", args + [limit])]
+    def runs(session_id: str, limit: int = 30):
+        c, _, _ = viewer(session_id, need=None)  # 只列本会话的运行记录
+        return [dict(r) for r in c.execute("SELECT run_id, session_id, user_id, company_id, user_message, status, "
+                                           "started_at FROM runs WHERE session_id=? ORDER BY started_at DESC LIMIT ?",
+                                           (session_id, limit))]
 
     @app.get("/api/runs/{run_id}")
-    def run(run_id: str):
-        r = runlog.load(conn(), run_id)
-        if not r:
-            raise HTTPException(404, "没有该运行记录")
+    def run(run_id: str, session_id: str):
+        c, _, _ = viewer(session_id, need=None)
+        r = runlog.load(c, run_id)
+        if not r or r["session_id"] != session_id:
+            raise HTTPException(404, "本会话没有该运行记录")
         return r
 
     @app.get("/api/invoices")
-    def invoices(company_id: str, month: str | None = None):
-        c = conn()
+    def invoices(session_id: str, month: str | None = None):
+        c, _, company_id = viewer(session_id)
         sql, args = "SELECT * FROM invoices WHERE company_id=?", [company_id]
         if month:
             sql, args = sql + " AND substr(issue_date,1,7)=?", args + [month]
@@ -139,18 +152,15 @@ def create_app(settings) -> FastAPI:
                 for r in c.execute(sql + " ORDER BY issue_date, invoice_id", args)]
 
     @app.get("/api/invoice-months")
-    def invoice_months(company_id: str):
-        return [r["m"] for r in conn().execute("SELECT DISTINCT substr(issue_date,1,7) m FROM invoices "
+    def invoice_months(session_id: str):
+        c, _, company_id = viewer(session_id)
+        return [r["m"] for r in c.execute("SELECT DISTINCT substr(issue_date,1,7) m FROM invoices "
                                                "WHERE company_id=? ORDER BY m", (company_id,))]
 
     @app.post("/api/invoice-files")
     def upload_invoices(body: InvoiceUpload):
         """预览（commit=false）或导入发票文件。解析与校验全部由程序完成，不经模型。"""
-        c = conn()
-        try:
-            invoice_files.require_write(c, body.user_id, body.company_id)
-        except PermissionError as e:
-            raise HTTPException(403, str(e))
+        c, user_id, company_id = viewer(body.session_id, need="write")
         if body.accept_buyer_mismatch and not settings.allow_foreign_buyer:
             raise HTTPException(403, "未开启 FH_ALLOW_FOREIGN_BUYER，不能导入购买方不是本企业的发票")
         if not body.files or len(body.files) > 50:
@@ -162,52 +172,51 @@ def create_app(settings) -> FastAPI:
             except (binascii.Error, ValueError):
                 raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
             parsed.append(invoice_files.parse_bytes(Path(f.name).name, data))
-        results = invoice_files.import_files(c, body.company_id, parsed, commit=body.commit,
+        results = invoice_files.import_files(c, company_id, parsed, commit=body.commit,
                                              accept_buyer_mismatch=body.accept_buyer_mismatch)
         event = None
-        if body.commit and body.session_id:
-            sess = c.execute("SELECT user_id, company_id FROM sessions WHERE session_id=?", (body.session_id,)).fetchone()
-            if sess and (sess["user_id"], sess["company_id"]) == (body.user_id, body.company_id):
-                event = invoice_files.record_import_event(c, body.session_id, body.company_id, results, parsed)
+        if body.commit:
+            event = invoice_files.record_import_event(c, body.session_id, company_id, results, parsed)
         return {"event": event, "results": [{**r, "parsed": p.view()} for r, p in zip(results, parsed)]}
 
     @app.get("/api/operations")
-    def operations(company_id: str | None = None):
-        c = conn()
-        sql, args = "SELECT * FROM operations", []
-        if company_id:
-            sql, args = sql + " WHERE company_id=?", [company_id]
+    def operations(session_id: str):
+        c, _, company_id = viewer(session_id)
+        sql, args = "SELECT * FROM operations WHERE company_id=?", [company_id]
         return [{**dict(r), "before_json": json.loads(r["before_json"]),
                  "after_json": json.loads(r["after_json"]) if r["after_json"] else None}
                 for r in c.execute(sql + " ORDER BY created_at DESC", args)]
 
     @app.get("/api/memory")
-    def memories(user_id: str, company_id: str):
-        c = conn()
+    def memories(session_id: str):
+        c, user_id, company_id = viewer(session_id, need=None)  # 用户自己的记忆
         task = memory.open_task(c, user_id, company_id)
         return {"preferences": [_pref_view(p) for p in memory.preferences(c, user_id, company_id)],
                 "task": _task_view(c, task) if task else None}
 
     @app.patch("/api/memory/{memory_id}")
     def edit_memory(memory_id: str, body: MemoryEdit):
-        if not body.content or not memory.update_preference(conn(), memory_id, body.user_id, body.company_id,
-                                                            body.content.strip()):
+        c, user_id, company_id = viewer(body.session_id, need=None)
+        if not body.content or not memory.update_preference(c, memory_id, user_id, company_id, body.content.strip()):
             raise HTTPException(404, "找不到该记忆")
         return {"ok": True}
 
     @app.delete("/api/memory/{memory_id}")
-    def delete_memory(memory_id: str, user_id: str, company_id: str):
-        if not memory.delete_preference(conn(), memory_id, user_id, company_id):
+    def delete_memory(memory_id: str, session_id: str):
+        c, user_id, company_id = viewer(session_id, need=None)
+        if not memory.delete_preference(c, memory_id, user_id, company_id):
             raise HTTPException(404, "找不到该记忆")
         return {"ok": True}
 
     @app.get("/api/overview")
-    def overview(user_id: str, company_id: str):
+    def overview(session_id: str):
         """演示页首屏：程序直接计算的月度汇总与 9 月用途检查（不经模型、不改任务记忆）。"""
-        c = conn()
-        level = c.execute("SELECT level FROM permissions WHERE user_id=? AND company_id=?", (user_id, company_id)).fetchone()
-        if not level or level["level"] == "none":
-            return {"forbidden": True}
+        try:
+            c, _, company_id = viewer(session_id)
+        except HTTPException as e:
+            if e.status_code == 403:
+                return {"forbidden": True}
+            raise
         months = []
         have = [r["m"] for r in c.execute("SELECT DISTINCT substr(issue_date,1,7) m FROM invoices WHERE company_id=?",
                                           (company_id,))]
@@ -228,11 +237,12 @@ def create_app(settings) -> FastAPI:
 
     @app.post("/api/rules")
     def add_rule(body: RuleVersion):
+        c, _, _ = viewer(body.session_id, need="write")
         params = None
         if body.purpose_required_min not in (None, ""):
             params = {"purpose_required_min_cents": to_cents(body.purpose_required_min)}
         try:
-            rule = knowledge.add_version(conn(), body.rule_id.strip().upper(), body.version.strip(), body.body.strip(),
+            rule = knowledge.add_version(c, body.rule_id.strip().upper(), body.version.strip(), body.body.strip(),
                                          name=body.name or None, companies=body.companies or None,
                                          effective_from=body.effective_from, params=params)
         except (ValueError, TypeError) as e:
@@ -241,17 +251,18 @@ def create_app(settings) -> FastAPI:
 
     @app.post("/api/rules/{rule_id}/{version}/status")
     def rule_status(rule_id: str, version: str, body: RuleStatus):
+        c, _, _ = viewer(body.session_id, need="write")
         if body.status not in ("active", "disabled"):
             raise HTTPException(400, "status 只能是 active 或 disabled")
         try:
-            knowledge.set_status(conn(), rule_id, version, body.status)
+            knowledge.set_status(c, rule_id, version, body.status)
         except ValueError as e:
             raise HTTPException(404, str(e))
         return {"ok": True}
 
     @app.get("/api/rules")
-    def rules(company_id: str):
-        c = conn()
+    def rules(session_id: str):
+        c, _, company_id = viewer(session_id)
         resolved = {(r.chosen["rule_id"], r.chosen["version"])
                     for r in knowledge.resolve(c, company_id, as_of=settings.today) if r.chosen}
         out = []

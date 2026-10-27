@@ -17,7 +17,6 @@ EXCLUDE = (
     "materials/",                         # 原始材料与早期规划（data/source 已含运行所需的官方资料）
     "docs/development-review-plan",       # 内部开发规划
     "docs/reviews/",                      # 内部审查往来
-    "scripts/package.py",
 )
 KEY = re.compile(rb"sk-[A-Za-z0-9]{20,}")
 
