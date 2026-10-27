@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import re
@@ -16,9 +17,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
+from . import ocr as ocr_mod
 from .money import fmt, to_cents
 
-SUFFIXES = (".pdf", ".ofd")
+SUFFIXES = (".pdf", ".ofd", *ocr_mod.IMAGE_SUFFIXES)
+OCR_LAYOUT = "ocr_mineru"
 USCC = re.compile(r"^[0-9A-HJ-NPQRTUWXY]{2}\d{6}[0-9A-HJ-NPQRTUWXY]{10}$")
 UPPER_CHARS = "负零壹贰叁肆伍陆柒捌玖拾佰仟万亿元圆角分整正"
 MONEY = r"(-?[\d,]+\.\d{2})"
@@ -28,7 +31,7 @@ MONEY = r"(-?[\d,]+\.\d{2})"
 class ParsedInvoice:
     file_name: str
     sha256: str
-    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample
+    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample / ocr_mineru / no_text
     invoice_type: str | None = None  # 数电专票 / 数电普票 / 增值税电子专用发票 / 增值税电子普通发票
     invoice_no: str | None = None
     invoice_code: str | None = None
@@ -45,6 +48,7 @@ class ParsedInvoice:
     face_remark: str | None = None   # 票面备注，不写入 invoices.remark（那是用户填写的字段）
     red_of: str | None = None        # 红字发票对应的蓝字发票号码（取自票面备注）
     is_test_sample: bool = False     # invoicegen 生成的测试样张（TEST 号码、满版水印），默认不导入
+    qr: str | None = None            # 票面二维码原文（识别件才读），用于核对号码、日期、金额
     issues: list[str] = field(default_factory=list)  # 阻断导入
     notes: list[str] = field(default_factory=list)   # 提示，不阻断
 
@@ -150,7 +154,7 @@ TYPES = (("电子发票（增值税专用发票）", "数电专票"), ("电子�
 
 
 def _type(text: str) -> str | None:
-    compact = re.sub(r"\s+", "", text)
+    compact = re.sub(r"\s+", "", text).replace("(", "（").replace(")", "）")
     return next((name for title, name in TYPES if title in compact), None)
 
 
@@ -255,6 +259,94 @@ def _parse_legacy(inv: ParsedInvoice, text: str, lines: list[str]) -> None:
         inv.total_cents = _money(singles[-1])
 
 
+# ---------- 识别件（MinerU 输出的 Markdown，表格为 HTML） ----------
+
+def _flatten(md: str) -> str:
+    """把 MinerU 的 HTML 表格和 Markdown 标记拆成逐格逐行的纯文字；“*类别*项目”里的星号保留。"""
+    s = re.sub(r"<details>.*?</details>", "", md, flags=re.S)  # 印章区的识别文字，不是票面字段
+    s = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", s)
+    s = re.sub(r"</t[dh]>\s*|<br\s*/?>|</tr>", "\n", s)
+    s = html.unescape(re.sub(r"<[^>]+>", "", s))
+    return re.sub(r"^#+\s*", "", s, flags=re.M)
+
+
+def _party_name(raw: str | None) -> str | None:
+    """去掉竖排“购买方信息”等标签混进名称的残字，如“个人 息”“XX公司 购买方信息”。"""
+    name = re.sub(r"\s+[购买销售方信息]{1,5}$", "", (raw or "").strip()).strip()
+    return name or None
+
+
+def _parse_ocr(inv: ParsedInvoice, md: str) -> None:
+    """识别件：标签与值常挤在同一格，按标签取值。金额与税额按位置取（除小写合计外的前两个 ¥ 金额），
+    不在数字里挑能凑平的组合，所以认错的数字会被后面的核对拦下。"""
+    inv.layout = OCR_LAYOUT
+    text = _flatten(md)
+    inv.issue_date = _date(text)
+    inv.invoice_type = _type(text)
+    inv.total_upper = _upper(text)
+    inv.items = [re.sub(r"合\s*计?$", "", m) for m in  # 旧版版面里项目名常和下一格的“合计”粘在一起
+                 re.findall(r"(\*[一-鿿][^*\s|]*\*[^\s|]+)", text)]
+    inv.invoice_no = _first(r"发票号码[:：]?[ \t]*(TEST\w+|\d{20}|\d{8})(?!\d)", text)
+    if any(m in text for m in TEST_MARKS):  # 测试样张的水印、标题即使号码认不出也要识别出来，默认拒收
+        inv.is_test_sample = True
+    inv.invoice_code = _first(r"发票代码[:：]?[ \t]*(\d{12}|\d{10})(?!\d)", text)
+    names = re.findall(r"名\s*称[:：][ \t]*(.*?)(?=纳税人识别号|统一社会信用代码|\n|$)", text)
+    if len(names) >= 2:
+        inv.buyer_name, inv.seller_name = _party_name(names[0]), _party_name(names[1])
+    tax_ids = re.findall(r"纳税人识别号[:：]?[ \t]*([0-9A-Z]{15,20})?", text)
+    if len(tax_ids) >= 2:
+        inv.buyer_tax_id, inv.seller_tax_id = (t or None for t in tax_ids[:2])
+    total = re.search(rf"小写[)）]?\s*[¥￥]\s*{MONEY}", text)
+    if total:
+        inv.total_cents = _money(total.group(1))
+        others = [m for m in re.finditer(rf"[¥￥]\s*{MONEY}", text) if not (total.start() <= m.start() < total.end())]
+        if len(others) >= 2:
+            inv.amount_cents, inv.tax_cents = _money(others[0].group(1)), _money(others[1].group(1))
+
+
+USCC_CHARS = "0123456789ABCDEFGHJKLMNPQRTUWXY"
+USCC_WEIGHTS = (1, 3, 9, 27, 19, 26, 16, 17, 20, 29, 25, 13, 8, 24, 10, 30, 28)
+
+
+def uscc_ok(code: str) -> bool:
+    """统一社会信用代码校验位（GB 32100—2015）。"""
+    if not USCC.match(code or ""):
+        return False
+    total = sum(USCC_CHARS.index(c) * w for c, w in zip(code, USCC_WEIGHTS))
+    return code[-1] == USCC_CHARS[(31 - total % 31) % 31]
+
+
+def _check_ocr(inv: ParsedInvoice, data: bytes) -> None:
+    """识别件的额外核对：税号校验位、票面二维码与识别结果是否一致。"""
+    inv.notes.append("识别件：号码、日期、名称没有校验位，导入前须对照票面人工核对")
+    for label, code in (("购买方", inv.buyer_tax_id), ("销售方", inv.seller_tax_id)):
+        if code and len(code) == 18 and not code.startswith("TEST") and not uscc_ok(code):
+            inv.notes.append(f"{label}税号 {code} 校验位不符，可能识别有误，请核对")
+    try:
+        inv.qr = ocr_mod.read_qr(data)
+    except ImportError:
+        inv.notes.append("未安装二维码组件（requirements-ocr.txt），没有核对二维码")
+        return
+    except Exception as e:  # 图片损坏等：不阻断，交给人工核对
+        inv.notes.append(f"二维码读取失败：{type(e).__name__}")
+        return
+    q = inv.qr and ocr_mod.qr_fields(inv.qr)
+    if not q:
+        inv.notes.append("未读到票面二维码，号码与日期只能人工核对")
+        return
+    if q["number"] != inv.invoice_no:
+        inv.issues.append(f"二维码中的发票号码 {q['number']} 与识别结果 {inv.invoice_no} 不一致")
+    if q["code"] and inv.invoice_code and q["code"] != inv.invoice_code:
+        inv.issues.append(f"二维码中的发票代码 {q['code']} 与识别结果 {inv.invoice_code} 不一致")
+    if q["issue_date"] != inv.issue_date:
+        inv.issues.append(f"二维码中的开票日期 {q['issue_date']} 与识别结果 {inv.issue_date} 不一致")
+    # 旧版票二维码里是不含税金额（实测）；数电票未取得带二维码的样本，两种口径都接受
+    if q["amount_cents"] not in (inv.amount_cents, inv.total_cents):
+        inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的金额、价税合计都不一致")
+    if not any("二维码" in x for x in inv.issues):
+        inv.notes.append("二维码核对一致：号码、日期、金额")
+
+
 # ---------- OFD ----------
 
 def _local(tag: str) -> str:
@@ -357,7 +449,11 @@ MAX_BYTES = 10 * 1024 * 1024        # 单个文件上限
 MAX_UNZIPPED = 50 * 1024 * 1024     # OFD 解压后总量上限，防压缩炸弹
 
 
-def parse_bytes(name: str, data: bytes) -> ParsedInvoice:
+NO_TEXT = "没有文字层（扫描件或图片），需要识别才能导入：安装 MinerU 并设置 FH_OCR=mineru，见 README“扫描件与图片发票”"
+
+
+def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> ParsedInvoice:
+    """ocr 为识别函数（ocr.from_settings），只用于图片和没有文字层的 PDF；不给时这类文件提示需要识别。"""
     inv = ParsedInvoice(file_name=name, sha256=hashlib.sha256(data).hexdigest(), layout="unknown")
     if len(data) > MAX_BYTES:
         inv.issues.append(f"文件超过 {MAX_BYTES // 1024 // 1024} MB")
@@ -369,11 +465,27 @@ def parse_bytes(name: str, data: bytes) -> ParsedInvoice:
                     inv.issues.append("OFD 解压后体积异常，未解析")
                     return inv
                 _parse_ofd(inv, z)
-        elif data[:5] == b"%PDF-":
-            from pypdf import PdfReader  # 只有导入 PDF 时才需要
-            _parse_text(inv, "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages))
+        elif data[:5] == b"%PDF-" or ocr_mod.is_image(data):
+            text = ""
+            if data[:5] == b"%PDF-":
+                from pypdf import PdfReader  # 只有导入 PDF 时才需要
+                text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
+            if text.strip():
+                _parse_text(inv, text)
+            elif ocr is None:
+                inv.layout = "no_text"
+                inv.issues.append(NO_TEXT)
+                return inv
+            else:
+                try:
+                    md = ocr(name, data)
+                except ocr_mod.OcrError as e:
+                    inv.issues.append(f"识别失败：{e}")
+                    return inv
+                _parse_ocr(inv, md)
+                _check_ocr(inv, data)
         else:
-            inv.issues.append("不是 PDF 或 OFD 文件")
+            inv.issues.append("不是 PDF、OFD 或图片文件")
             return inv
     except Exception as e:  # 外部文件格式千奇百怪，任何解析异常都转成问题，交给人复核
         inv.issues.append(f"文件无法解析：{type(e).__name__}: {e}")
@@ -390,8 +502,8 @@ def parse_text(text: str, name: str = "text") -> ParsedInvoice:
     return inv
 
 
-def parse_file(path: Path) -> ParsedInvoice:
-    return parse_bytes(path.name, path.read_bytes())
+def parse_file(path: Path, ocr: ocr_mod.OcrFn | None = None) -> ParsedInvoice:
+    return parse_bytes(path.name, path.read_bytes(), ocr)
 
 
 def collect(paths: list[str]) -> list[Path]:
@@ -410,9 +522,10 @@ def _content(inv: ParsedInvoice) -> dict:
 
 def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedInvoice], *,
                  commit: bool = False, accept_buyer_mismatch: bool = False,
-                 allow_test_samples: bool = False) -> list[dict]:
+                 allow_test_samples: bool = False, confirm_ocr: bool = False) -> list[dict]:
     """逐张判定：imported / duplicate / conflict / rejected。commit=False 时只预览，不写库。
-    测试样张默认拒收；allow_test_samples 只给测试环境用（FH_ALLOW_TEST_SAMPLES=1 且显式放行）。"""
+    测试样张默认拒收；allow_test_samples 只给测试环境用（FH_ALLOW_TEST_SAMPLES=1 且显式放行）。
+    识别件（扫描件、图片）导入时须 confirm_ocr：操作员已对照票面核对号码和日期，否则标为 needs_confirmation、不入库。"""
     company = conn.execute("SELECT name, short_name FROM companies WHERE company_id=?", (company_id,)).fetchone()
     if not company:
         raise ValueError(f"企业 {company_id} 不存在")
@@ -443,8 +556,13 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
             elif existing:
                 r["status"] = "conflict"
                 r["issues"].append(f"库内或本批前面的文件中已有同号发票，内容不同：{dict(existing)}")
+            elif inv.layout == OCR_LAYOUT and commit and not confirm_ocr:
+                r["status"] = "needs_confirmation"
+                r["notes"].append("识别件未导入：请对照票面核对号码和日期，确认后再导入（命令行加 --confirm-ocr，网页勾选确认）")
             else:
                 r["status"] = "imported" if commit else "would_import"
+                if inv.layout == OCR_LAYOUT and not commit:
+                    r["notes"].append("识别件：导入时须确认已对照票面核对号码和日期")
                 now = datetime.now().isoformat(timespec="seconds")
                 c = _content(inv)
                 conn.execute("INSERT INTO invoices (company_id, invoice_id, issue_date, seller, item, amount_cents, "

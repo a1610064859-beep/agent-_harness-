@@ -22,3 +22,5 @@ dist/
 /test-invoices/
 /blobs/
 .mineru-service.lock
+/data/ocr/
+/.ocr/

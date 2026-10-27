@@ -1,0 +1,4 @@
+# Optional: scanned/image invoice recognition (see README "扫描件与图片发票").
+# MinerU itself lives in its own venv (scripts/setup-ocr.bat); these two read the QR code in the harness.
+pypdfium2==5.14.0
+zxing-cpp==3.1.1

@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import db, harness, invoice_files, knowledge, memory, runlog
+from . import db, harness, invoice_files, knowledge, memory, ocr, runlog
 from .llm import LLMError, from_settings
 from .money import fmt, to_cents
 from .tools import LEVEL_TEXT, ToolError, _pref_view, _task_view, purpose_status, recover_pending
@@ -54,6 +54,7 @@ class InvoiceUpload(BaseModel):
     commit: bool = False
     accept_buyer_mismatch: bool = False
     allow_test_samples: bool = False
+    confirm_ocr: bool = False  # 识别件：操作员已对照票面核对号码和日期
 
 
 class MemoryEdit(BaseModel):
@@ -65,6 +66,7 @@ def create_app(settings) -> FastAPI:
     app = FastAPI(title="财税 Agent Harness")
     llm = from_settings(settings)
     recovered = recover_pending(db.connect(settings.db_path))  # 启动时核对中断留下的写入
+    recognizer = ocr.from_settings(settings)  # 扫描件/图片识别，默认关闭
 
     def conn():
         return db.connect(settings.db_path)
@@ -95,7 +97,8 @@ def create_app(settings) -> FastAPI:
         perms = {f"{r['user_id']}/{r['company_id']}": LEVEL_TEXT[r["level"]] for r in c.execute("SELECT * FROM permissions")}
         return {"users": users, "companies": companies, "permissions": perms, "model": llm.model,
                 "today": settings.today.isoformat(), "recovered_on_start": recovered,
-                "allow_foreign_buyer": settings.allow_foreign_buyer, "allow_test_samples": settings.allow_test_samples}
+                "allow_foreign_buyer": settings.allow_foreign_buyer, "allow_test_samples": settings.allow_test_samples,
+                "ocr": recognizer is not None}
 
     @app.post("/api/sessions")
     def new_session(body: NewSession):
@@ -174,10 +177,10 @@ def create_app(settings) -> FastAPI:
                 data = base64.b64decode(f.data, validate=True)
             except (binascii.Error, ValueError):
                 raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
-            parsed.append(invoice_files.parse_bytes(Path(f.name).name, data))
+            parsed.append(invoice_files.parse_bytes(Path(f.name).name, data, recognizer))
         results = invoice_files.import_files(c, company_id, parsed, commit=body.commit,
                                              accept_buyer_mismatch=body.accept_buyer_mismatch,
-                                             allow_test_samples=body.allow_test_samples)
+                                             allow_test_samples=body.allow_test_samples, confirm_ocr=body.confirm_ocr)
         event = None
         if body.commit:
             event = invoice_files.record_import_event(c, body.session_id, company_id, results, parsed)

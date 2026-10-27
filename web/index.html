@@ -371,7 +371,8 @@ async function renderData() {
 }
 
 const IMPORT_STATUS = { would_import: ["可导入", "ok"], imported: ["已导入", "ok"], duplicate: ["已存在，跳过", ""],
-                        conflict: ["同号冲突", "bad"], rejected: ["未通过校验", "bad"] };
+                        conflict: ["同号冲突", "bad"], rejected: ["未通过校验", "bad"],
+                        needs_confirmation: ["待人工确认", "bad"] };
 const imp = { files: [], results: null };
 
 function readB64(file) {
@@ -387,6 +388,7 @@ async function uploadInvoices(commit) {
   const body = { session_id: state.sid, commit,
                  accept_buyer_mismatch: $("#impAccept")?.checked || false,
                  allow_test_samples: $("#impTest")?.checked || false,
+                 confirm_ocr: $("#impOcr")?.checked || false,
                  files: await Promise.all(imp.files.map(async (f) => ({ name: f.name, data: await readB64(f) }))) };
   $("#impMsg").textContent = commit ? "导入中…" : "解析中…";
   try {
@@ -429,18 +431,20 @@ function renderImport() {
   const can = permText() === "可查看并修改";
   $("#pane-import").innerHTML = `<h2>导入发票文件到 ${state.company}</h2>
     ${can ? "" : `<p class="banner" style="margin:0 0 10px">${state.user} 对 ${state.company} ${esc(permText())}，不能导入。</p>`}
-    <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd"></label>
+    <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票${state.meta.ocr ? "或扫描件、图片" : ""}，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd,.png,.jpg,.jpeg,.tif,.tiff,.bmp"></label>
     <div id="impList" class="muted" style="font-size:12px;margin-bottom:8px"></div>
     ${state.meta.allow_foreign_buyer ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impAccept" style="width:auto">
       允许购买方不是本企业（测试模式，FH_ALLOW_FOREIGN_BUYER=1）</label>` : ""}
     ${state.meta.allow_test_samples ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impTest" style="width:auto">
       放行测试样张（TEST 号码，测试模式，FH_ALLOW_TEST_SAMPLES=1）</label>` : ""}
+    ${state.meta.ocr ? `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="impOcr" style="width:auto">
+      识别件（扫描件、图片）：我已对照票面核对号码和日期</label>` : ""}
     <div style="display:flex;gap:8px;margin:8px 0"><button id="impPreview" ${can ? "" : "disabled"}>解析预览</button>
       <button class="primary" id="impCommit" disabled>确认导入</button></div>
     <div class="muted" id="impMsg" style="font-size:12px;margin-bottom:8px">程序解析票面并核对：金额 + 税额 = 价税合计、大写与小写一致、号码格式。任何一项对不上都不会导入。</div>
     <div id="impResults"></div>`;
   const setFiles = (list) => {
-    imp.files = [...list].filter((f) => /\.(pdf|ofd)$/i.test(f.name)); imp.results = null; renderImportResults();
+    imp.files = [...list].filter((f) => /\.(pdf|ofd|png|jpe?g|tiff?|bmp)$/i.test(f.name)); imp.results = null; renderImportResults();
     $("#impList").textContent = imp.files.length ? `已选 ${imp.files.length} 个：${imp.files.map((f) => f.name).join("、")}` : "";
   };
   const drop = $("#impDrop");

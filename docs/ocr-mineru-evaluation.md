@@ -1,6 +1,8 @@
-# 扫描件 / 图片发票识别：MinerU 可行性评估（2026-10-27）
+# 扫描件 / 图片发票识别：MinerU 评估与实现（2026-10-27）
 
-现状：导入只读 PDF/OFD 的文字层，不做 OCR，也不交给模型识别。扫描件、手机拍照、图片发票没有文字层，目前都会被拒：图片文件提示“不是 PDF 或 OFD 文件”；只有图像的扫描 PDF 提示“未识别到发票号码 / 开票日期 / 销售方名称 / 价税合计”，没有说明真正原因是缺少文字层（实测）。本文记录用 MinerU 补上这一块的实测结果和建议做法。**以下数字都来自实际运行；尚未改动导入代码。**
+**状态：已实现（可选组件，默认关闭）。** 第 1–4 节是实现前的可行性评估（原样保留）；第 6 节是实现后的结果。以下数字都来自实际运行。
+
+实现前的现状：导入只读 PDF/OFD 的文字层。扫描件、手机拍照、图片发票没有文字层，都会被拒：图片文件提示“不是 PDF 或 OFD 文件”；只有图像的扫描 PDF 提示“未识别到发票号码 / 开票日期 / 销售方名称 / 价税合计”，没有说明真正原因是缺少文字层（实测）。
 
 ## 1. 实验设置
 
@@ -42,12 +44,35 @@
 4. **部署：** 开发机只够跑 `basic` 档，而且很慢；更高档（`standard`/`advanced`，内置 1.2B 视觉语言模型）需要 8 GB 以上内存。建议 MinerU 跑在 Windows 电脑或另一台机器上，harness 通过本地 HTTP 调用；网页上传要改成后台任务，因为一张要几十秒。
 5. **不建议**用 mineru.net 云端或把发票图片发给多模态大模型 API：发票含税号和金额，赛事材料也不得外传；大模型还可能“补全”看不清的数字。无论哪种识别方式，入库前都必须经过同一道程序校验。
 
-## 4. 待定
+## 4. 当时待定的事项（已由用户确定）
 
-- MinerU 跑在哪台机器上（Windows 电脑的内存和显卡）。
-- 初赛截止（11-13）前是否要做：它不在赛题必做范围内，还有演示录屏和 R1 审查没完成。
-- 是否接受 OCR 导入必须人工确认号码和日期这一步。
+- MinerU 跑在用户的 Windows 笔记本上：24 GB 内存，RTX 3070 Ti Laptop（8 GB 显存），用 standard 档。
+- 接受识别件导入前人工确认号码和日期。
 
-## 5. 复现
+## 5. 复现（评估实验）
 
-实验脚本放在任务临时目录，未入库。步骤：装 `mineru==4.0.12` → `mineru telemetry disable` → `mineru config set parse_server.local.mode managed`、`parse_server.local.managed_tier basic` → `mineru-kit models download --tier basic` → `mineru server start` → 对每张图 `mineru parse <图> --tier basic --no-marker -o <md>` → 用 `invoice_files.parse_text` 解析，与标准答案逐字段比对。
+实验脚本放在任务临时目录，未入库。步骤：装 `mineru==4.0.12` → `mineru server start` → `mineru telemetry disable` → `mineru config set parse_server.local.mode managed`、`parse_server.local.managed_tier basic`（先 `mineru-kit models download --tier basic`）→ 对每张图 `mineru parse <图> --tier basic --no-marker -o <md>` → 解析并与标准答案逐字段比对。实现后可直接用 `scripts/ocr_check.py`。
+
+## 6. 实现与结果
+
+| 部分 | 位置 |
+|---|---|
+| 调用 MinerU 命令行、读二维码 | `fiscal_harness/ocr.py`：在 `data/ocr/` 下运行；服务未开时自动开一次；模型加载中时等待；识别完 `forget` 清掉 MinerU 文档库记录；从不加 `--remote` |
+| 识别件解析与核对 | `fiscal_harness/invoice_files.py`：`_parse_ocr`（版式 `ocr_mineru`，按标签取值，金额与税额按位置取，不凑数）、`_check_ocr`（税号校验位提示、二维码交叉核对）；测试样张的水印在识别件里同样会被认出并默认拒收 |
+| 人工确认 | `import_files(confirm_ocr=…)`：未确认时状态 `needs_confirmation`，不入库；命令行 `--confirm-ocr`，网页勾选 |
+| 安装与自检 | `scripts/setup-ocr.bat`（MinerU 装进 `.ocr\venv`，下载模型，关遥测，写 `.env`）、`scripts/ocr_check.py`（把有文字层的 PDF 转图片后识别，与其文字层逐字段比对） |
+| 测试 | `tests/test_ocr.py`：19 项，识别函数用替身，不需要安装 MinerU |
+
+**实现后在开发机上的端到端结果**（`scripts/ocr_check.py`，真实 MinerU basic 档、CPU，3 份真实版式 PDF × 清晰/差扫描）：
+
+| 指标 | 结果 |
+|---|---|
+| 字段正确 | **54/54** |
+| 通过校验 | 6/6 张 |
+| 通过校验但有字段错误 | **0** 张 |
+| 二维码核对 | 旧版普票清晰与差扫描两张都读到二维码并核对一致；两张数电票样本没有二维码（脱敏样本） |
+| 速度 | 本次 2.6–11.8 秒/张**不可作数**：图片与评估实验时逐字节相同，MinerU 文档库里还留着当时的识别记录，很可能直接用了缓存。实际速度以评估时的 22–75 秒/页（CPU）为准，显卡上的速度需在 Windows 笔记本上用 `ocr_check` 测 |
+
+同一批 MinerU 输出交给新解析器：真实版式 6 张全部字段正确；带水印的 6 张测试样张全部被拒（其中 1 张识别出 TEST 号码，按测试样张默认拒收）。
+
+尚未验证：standard 档（含视觉语言模型）的输出结构是否与 basic 档一致——解析器按标签取值，应能兼容，但需要在 Windows 笔记本上跑 `ocr_check` 确认；数电票二维码中的金额口径（不含税还是价税合计）没有真实样本，目前两种都接受。

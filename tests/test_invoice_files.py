@@ -181,7 +181,7 @@ def test_ofd_metadata_mismatch_is_rejected():
 
 def test_broken_files_become_issues():
     assert inf.parse_bytes("x.pdf", b"%PDF-1.4 broken").issues[0].startswith("文件无法解析")
-    assert inf.parse_bytes("x.txt", b"hello").issues == ["不是 PDF 或 OFD 文件"]
+    assert inf.parse_bytes("x.txt", b"hello").issues == ["不是 PDF、OFD 或图片文件"]
 
 
 # ---------- 入库 ----------

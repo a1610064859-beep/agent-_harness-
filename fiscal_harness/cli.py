@@ -9,7 +9,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import db, harness, importer, invoice_files, knowledge, memory, runlog
+from . import db, harness, importer, invoice_files, knowledge, memory, ocr, runlog
 from .config import load_settings
 from .llm import LLMError, from_settings
 from .money import fmt
@@ -265,7 +265,7 @@ def _print_run(run: dict, full: bool) -> None:
 # ---------- 数据核对 ----------
 
 STATUS_TEXT = {"would_import": "可导入", "imported": "已导入", "duplicate": "已存在，跳过", "conflict": "同号冲突",
-               "rejected": "未通过校验"}
+               "rejected": "未通过校验", "needs_confirmation": "待人工确认"}
 
 
 def _gen_test_invoices(conn, args, s):
@@ -304,10 +304,15 @@ def cmd_data(args, s):
             sys.exit("--accept-buyer-mismatch 只用于测试外部样本，需同时设置环境变量 FH_ALLOW_FOREIGN_BUYER=1")
         if args.allow_test_samples and not s.allow_test_samples:
             sys.exit("--allow-test-samples 只用于测试，需同时设置环境变量 FH_ALLOW_TEST_SAMPLES=1")
-        parsed = [invoice_files.parse_file(f) for f in invoice_files.collect(args.files)]
+        recognizer = ocr.from_settings(s)
+        parsed = []
+        for f in invoice_files.collect(args.files):
+            if recognizer and (f.suffix.lower() in ocr.IMAGE_SUFFIXES or f.suffix.lower() == ".pdf"):
+                print(f"解析 {f.name} …", file=sys.stderr)  # 扫描件要识别，一张可能几十秒
+            parsed.append(invoice_files.parse_file(f, recognizer))
         results = invoice_files.import_files(conn, args.company, parsed, commit=args.commit,
                                              accept_buyer_mismatch=args.accept_buyer_mismatch,
-                                             allow_test_samples=args.allow_test_samples)
+                                             allow_test_samples=args.allow_test_samples, confirm_ocr=args.confirm_ocr)
         if args.json:
             return _out([{**r, "parsed": p.view()} for r, p in zip(results, parsed)])
         for r, p in zip(results, parsed):
@@ -409,12 +414,14 @@ def main(argv=None):
     a = sub.add_parser("data", help="核对当前保存的数据：invoices / bank / ops；导入发票文件：import-files；"
                                     "生成测试样张：gen-test-invoices")
     a.add_argument("action", choices=["invoices", "bank", "ops", "import-files", "gen-test-invoices"])
-    a.add_argument("--files", nargs="+", help="import-files：PDF/OFD 文件或目录")
+    a.add_argument("--files", nargs="+", help="import-files：PDF/OFD 文件或目录；开启识别后也收扫描件与图片")
     a.add_argument("--company", default="C001")
     a.add_argument("--month")
     a.add_argument("--commit", action="store_true", help="import-files：确认写入（默认只预览）")
     a.add_argument("--accept-buyer-mismatch", action="store_true", help="import-files：购买方不是本企业时也导入（测试用）")
     a.add_argument("--allow-test-samples", action="store_true", help="import-files：放行 invoicegen 测试样张（测试用）")
+    a.add_argument("--confirm-ocr", action="store_true",
+                   help="import-files：识别件（扫描件、图片）已对照票面核对号码和日期，确认导入")
     a.add_argument("--count", "-n", type=int, default=5, help="gen-test-invoices：张数")
     a.add_argument("--seed", type=int, help="gen-test-invoices：随机种子，固定后可复现")
     a.add_argument("--defect", choices=["total", "upper"], help="gen-test-invoices：故意印错价税合计或大写，测校验")

@@ -56,14 +56,14 @@ scripts/setup.sh
 | `runs export --all --out DIR` | 导出运行记录（每轮一份 JSON，另附可读的 README.md） |
 | `recover` | 核对中断留下的未回读写入（`chat`、`ask`、`serve` 启动时会自动执行） |
 | `data invoices --company C001 --month 2026-09` / `data ops` | 核对库内当前数据，以及每次写入的前后对比 |
-| `data import-files --company C001 --files 发票目录/ [--commit]` | 导入 PDF/OFD 电子发票：默认只预览，加 `--commit` 才写入（见下文“导入发票文件”） |
+| `data import-files --company C001 --files 发票目录/ [--commit]` | 导入 PDF/OFD 电子发票：默认只预览，加 `--commit` 才写入（见下文“导入发票文件”）；开启识别后也收扫描件与图片，导入时加 `--confirm-ocr` |
 | `data gen-test-invoices --company C001 --month 2026-09 -n 5 [--defect upper]` | 生成测试样张，购买方是该企业（见下文“测试样张”） |
 
 ## 导入发票文件
 
 网页右侧“导入发票”标签，或命令行 `data import-files`，可以把电子发票文件导入当前企业：
 
-- 支持数电票 PDF、税务局 OFD、旧版增值税电子普通发票 PDF。只读文件里的文字层，不做 OCR，也不交给模型识别。
+- 支持数电票 PDF、税务局 OFD、旧版增值税电子普通发票 PDF。默认只读文件里的文字层，不做 OCR，也不交给模型识别；扫描件与图片见下文“扫描件与图片发票”（可选，本机识别，不交给大模型）。
 - 程序逐张核对：金额 + 税额 = 价税合计、大写与小写一致、号码格式、OFD 元数据与票面一致、购买方是本企业。任何一项不符都不导入，并列出原因。
 - 同一张票重复导入会跳过；同号但内容不同标为冲突，不覆盖。红字发票照常导入并提示。
 - 购买方必须是本企业。测试外部样本时可设置环境变量 `FH_ALLOW_FOREIGN_BUYER=1`，网页才会出现放行开关，命令行才接受 `--accept-buyer-mismatch`；默认关闭。
@@ -72,6 +72,21 @@ scripts/setup.sh
 - 只有对该企业“可查看并修改”的用户才能导入。导入后用途、备注为空，仍由用户在对话中补充。
 - 票面全部字段（税号、不含税金额、税额、票面备注、来源文件哈希）存在 `invoice_sources` 表；`invoices` 表结构不变。
 - 导入只由操作员在网页或命令行执行，模型没有导入工具，对话中仍只能修改用途和备注。
+
+## 扫描件与图片发票（可选，MinerU 本机识别）
+
+没有文字层的发票（扫描 PDF、手机拍照、PNG/JPG 等）默认不能导入，会提示“没有文字层”。在本机安装 MinerU 后可以识别：
+
+```bat
+scripts\setup-ocr.bat            :: 一次性：MinerU 装进 .ocr\venv，下载 standard 档模型（约 2 GB，有显卡时走 Vulkan），写入 .env
+scripts\ocr-check.bat 发票目录\  :: 用你手头有文字层的电子发票 PDF 自检识别准确率和速度
+```
+
+- 只在本机运行：不使用 mineru.net 云端（从不加 `--remote`），关闭 MinerU 遥测；识别完从 MinerU 文档库删掉记录。
+- 只有图片和没有文字层的 PDF 才走识别；有文字层的 PDF、OFD 仍用原来的确定性解析。
+- 识别结果走与文字层**相同的程序校验**（金额 + 税额 = 价税合计、大写 = 小写、号码格式、购买方、重复与冲突），另加：税号校验位提示；票面二维码与识别出的号码、代码、日期、金额交叉核对，不一致就不导入。
+- 号码、日期、名称没有校验位，所以识别件导入前**必须人工确认**：网页勾选“我已对照票面核对号码和日期”，命令行加 `--confirm-ocr`；未确认时状态为“待人工确认”，不入库。
+- 设置项：`FH_OCR=mineru`、`FH_MINERU_BIN`（MinerU 命令行路径）、`FH_OCR_TIER`（basic / standard）、`FH_OCR_TIMEOUT`（秒，默认 300）。实测与设计见 [docs/ocr-mineru-evaluation.md](docs/ocr-mineru-evaluation.md)。
 
 ## 测试样张（invoicegen）
 
@@ -94,7 +109,7 @@ Windows：`scripts\gen-test-invoices.bat --company C001 --month 2026-09 -n 5`。
 ## 验证
 
 ```bash
-python -m pytest -q                  # 134 项确定性测试，不调用模型
+python -m pytest -q                  # 153 项确定性测试，不调用模型，也不需要安装 MinerU
 python -m evals.run --repeat 3       # 29 个多轮案例（含 5 个导入后的案例），真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录
