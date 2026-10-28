@@ -423,6 +423,7 @@ function renderImportResults() {
         ${row("开票日期", p.issue_date)}${row("销售方", p.seller_name)}${row("销售方税号", p.seller_tax_id)}
         ${row("购买方", p.buyer_name)}${row("购买方税号", p.buyer_tax_id)}${row("项目", p.items.join("；"))}
         ${row("金额", p.amount)}${row("税额", p.tax)}${row("价税合计", p.total)}${row("大写", p.total_upper)}${row("票面备注", p.face_remark)}
+        ${p.qr_info ? `${row("二维码代码", p.qr_info.code)}${row("二维码号码", p.qr_info.number)}${row("二维码日期", p.qr_info.issue_date)}${row("二维码金额（以票种口径为准）", p.qr_info.amount)}` : ""}
       </dl></details></div>`;
   }).join("");
 }
@@ -432,17 +433,17 @@ function renderImport() {
   $("#pane-import").innerHTML = `<h2>导入发票文件到 ${state.company}</h2>
     ${can ? "" : `<p class="banner" style="margin:0 0 10px">${state.user} 对 ${state.company} ${esc(permText())}，不能导入。</p>`}
     <p><a href="/ocr-review" target="_blank" rel="noopener noreferrer">制作人工核对样本</a>（图片只在浏览器处理，不会导入）</p>
-    <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票${state.meta.ocr ? "或扫描件、图片" : ""}，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd,.png,.jpg,.jpeg,.tif,.tiff,.bmp"></label>
+    <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票或扫描件、图片，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd,.png,.jpg,.jpeg,.tif,.tiff,.bmp"></label>
     <div id="impList" class="muted" style="font-size:12px;margin-bottom:8px"></div>
     ${state.meta.allow_foreign_buyer ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impAccept" style="width:auto">
       允许购买方不是本企业（测试模式，FH_ALLOW_FOREIGN_BUYER=1）</label>` : ""}
     ${state.meta.allow_test_samples ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impTest" style="width:auto">
       放行测试样张（TEST 号码，测试模式，FH_ALLOW_TEST_SAMPLES=1）</label>` : ""}
     ${state.meta.ocr ? `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="impOcr" style="width:auto">
-      识别件（扫描件、图片）：我已对照票面核对号码和日期</label>` : ""}
+      识别件（扫描件、图片）：我已对照票面核对发票代码（如有）、号码和日期</label>` : ""}
     <div style="display:flex;gap:8px;margin:8px 0"><button id="impPreview" ${can ? "" : "disabled"}>解析预览</button>
       <button class="primary" id="impCommit" disabled>确认导入</button></div>
-    <div class="muted" id="impMsg" style="font-size:12px;margin-bottom:8px">程序解析票面并核对：金额 + 税额 = 价税合计、大写与小写一致、号码格式。任何一项对不上都不会导入。</div>
+    <div class="muted" id="impMsg" style="font-size:12px;margin-bottom:8px">程序解析票面并核对金额和号码，可读取发票二维码供交叉核对。二维码不能证明票据真伪；图片需开启识别才能导入。</div>
     <div id="impResults"></div>`;
   const setFiles = (list) => {
     imp.files = [...list].filter((f) => /\.(pdf|ofd|png|jpe?g|tiff?|bmp)$/i.test(f.name)); imp.results = null; renderImportResults();

@@ -421,7 +421,7 @@ def main(argv=None):
     a.add_argument("--accept-buyer-mismatch", action="store_true", help="import-files：购买方不是本企业时也导入（测试用）")
     a.add_argument("--allow-test-samples", action="store_true", help="import-files：放行 invoicegen 测试样张（测试用）")
     a.add_argument("--confirm-ocr", action="store_true",
-                   help="import-files：识别件（扫描件、图片）已对照票面核对号码和日期，确认导入")
+                   help="import-files：识别件（扫描件、图片）已对照票面核对发票代码（如有）、号码和日期，确认导入")
     a.add_argument("--count", "-n", type=int, default=5, help="gen-test-invoices：张数")
     a.add_argument("--seed", type=int, help="gen-test-invoices：随机种子，固定后可复现")
     a.add_argument("--defect", choices=["total", "upper"], help="gen-test-invoices：故意印错价税合计或大写，测校验")

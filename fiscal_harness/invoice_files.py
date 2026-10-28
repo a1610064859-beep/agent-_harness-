@@ -72,6 +72,9 @@ class ParsedInvoice:
         for k in ("amount_cents", "tax_cents", "total_cents"):
             v = d.pop(k)
             d[k.removesuffix("_cents")] = None if v is None else fmt(v)
+        qr_fields = ocr_mod.qr_fields(self.qr) if self.qr else None
+        d["qr_info"] = ({**{k: qr_fields[k] for k in ("type", "code", "number", "issue_date")},
+                         "amount": fmt(qr_fields["amount_cents"])} if qr_fields else None)
         return {"invoice_id": self.invoice_id, **d}
 
 
@@ -148,6 +151,27 @@ def _date(text: str) -> str | None:
         except ValueError:
             return None
     return None
+
+
+def _ocr_date(text: str) -> str | None:
+    """识别件只在“开票日期”标签附近读取日期，避免误取其他业务日期。"""
+    label = re.compile(r"开票日期[ \t]*[:：]?[ \t]*(?:\n[ \t]*)?")
+    labels = list(label.finditer(text))
+    if not labels:
+        return _date(text)  # 兼容旧版无标签输出
+    dates = set()
+    for m in labels:
+        value = text[m.end():].split("\n", 1)[0]
+        match = re.match(
+            r"(\d{4})(?:[ \t]*年[ \t]*|[ \t]*[-/.][ \t]*|[ \t]+)"
+            r"(\d{1,2})(?:[ \t]*月[ \t]*|[ \t]*[-/.][ \t]*|[ \t]+)"
+            r"(\d{1,2})(?:[ \t]*日)?(?!\d)", value)
+        if match:
+            try:
+                dates.add(date(*map(int, match.groups())).isoformat())
+            except ValueError:
+                pass
+    return next(iter(dates)) if len(dates) == 1 else None
 
 
 TYPES = (("电子发票（增值税专用发票）", "数电专票"), ("电子发票（普通发票）", "数电普票"),
@@ -328,7 +352,7 @@ def _parse_ocr(inv: ParsedInvoice, md: str) -> None:
     if not any(m in text for m in TEST_MARKS) and (kind := _doc_kind(text)):
         inv.doc_kind = kind
         return
-    inv.issue_date = _date(text)
+    inv.issue_date = _ocr_date(text)
     inv.invoice_type = _type(text)
     inv.total_upper = _upper(text)
     inv.items = [re.sub(r"合\s*计?$", "", m) for m in  # 旧版版面里项目名常和下一格的“合计”粘在一起
@@ -366,40 +390,95 @@ def uscc_ok(code: str) -> bool:
     return code[-1] == USCC_CHARS[(31 - total % 31) % 31]
 
 
-def _check_ocr(inv: ParsedInvoice, data: bytes) -> None:
+def _bind_paper_header_from_qr(inv: ParsedInvoice, q: dict, text: str) -> None:
+    """仅在纸票票头、二维码、日期和不含税金额互相印证时补足无标签代码。"""
+    header = text.split("开票日期", 1)[0]
+    if ("开票日期" not in text or "增值税" not in header or "发票" not in header
+            or "电子" in header or not q["code"] or not re.fullmatch(r"\d{10}|\d{12}", q["code"])
+            or inv.issue_date != q["issue_date"] or inv.amount_cents is None
+            or inv.amount_cents != q["amount_cents"]):
+        return
+    no_candidates = re.findall(r"(?<![A-Za-z])No[ \t]*[.．:：]?[ \t]*(\d{8})(?!\d)", header, re.I)
+    if set(no_candidates) != {q["number"]}:
+        return
+    if inv.invoice_no and inv.invoice_no != q["number"]:
+        return
+    if inv.invoice_no is None and "发票号码" not in text:
+        inv.invoice_no = q["number"]
+        inv.notes.append("票号由票头 No 与二维码共同核对，请人工对照票面核实")
+    candidates = set(re.findall(r"(?<!\d)(?:\d{12}|\d{10})(?!\d)", header))
+    if (inv.invoice_no == q["number"] and inv.invoice_code is None and "发票代码" not in text
+            and candidates == {q["code"]}):
+        inv.invoice_code = q["code"]
+        inv.notes.append("无标签票头代码与二维码共同核对，请人工对照票面核实")
+
+
+def _check_ocr(inv: ParsedInvoice, data: bytes, text: str = "") -> None:
     """识别件的额外核对：税号校验位、票面二维码与识别结果是否一致。"""
-    inv.notes.append("识别件：号码、日期、名称没有校验位，导入前须对照票面人工核对")
+    inv.notes.append("识别件：发票代码（如有）、号码、日期和名称须在导入前对照票面人工核对")
     for label, code in (("购买方", inv.buyer_tax_id), ("销售方", inv.seller_tax_id)):
         if code and len(code) == 18 and not code.startswith("TEST") and not uscc_ok(code):
             inv.notes.append(f"{label}税号 {code} 校验位不符，可能识别有误，请核对")
+    _check_qr(inv, data, text=text, ocr=True)
+
+
+def _read_qr(inv: ParsedInvoice, data: bytes) -> dict | None:
     try:
         inv.qr = ocr_mod.read_qr(data)
+    except ocr_mod.QrConflictError as e:
+        inv.issues.append(str(e))
+        return None
     except ImportError:
-        inv.notes.append("未安装二维码组件（requirements-ocr.txt），没有核对二维码")
-        return
+        inv.notes.append("未安装二维码组件（requirements-ocr.txt），未读取二维码")
+        return None
     except Exception as e:  # 图片损坏等：不阻断，交给人工核对
         inv.notes.append(f"二维码读取失败：{type(e).__name__}")
-        return
+        return None
     q = inv.qr and ocr_mod.qr_fields(inv.qr)
     if not q:
-        inv.notes.append("未读到票面二维码，号码与日期只能人工核对")
+        inv.notes.append("未读到有效的发票二维码，请人工核对票面")
+    return q
+
+
+def _check_qr(inv: ParsedInvoice, data: bytes, text: str = "", ocr: bool = False) -> None:
+    """对 OCR 与 PDF 文字层的结果执行同一二维码核对。"""
+    q = _read_qr(inv, data)
+    if not q:
         return
-    if q["number"] != inv.invoice_no:
+    if ocr:
+        _bind_paper_header_from_qr(inv, q, text)
+    complete = True
+    if inv.invoice_no is None:
+        inv.notes.append("未识别到票面发票号码，无法与二维码核对")
+        complete = False
+    elif q["number"] != inv.invoice_no:
         inv.issues.append(f"二维码中的发票号码 {q['number']} 与识别结果 {inv.invoice_no} 不一致")
-    if q["code"] and inv.invoice_code and q["code"] != inv.invoice_code:
+    if q["code"] and inv.invoice_code is None:
+        inv.notes.append("未识别到票面发票代码，无法与二维码核对")
+        complete = False
+    elif q["code"] and q["code"] != inv.invoice_code:
         inv.issues.append(f"二维码中的发票代码 {q['code']} 与识别结果 {inv.invoice_code} 不一致")
-    if q["issue_date"] != inv.issue_date:
+    if inv.issue_date is None:
+        inv.notes.append("未识别到票面开票日期，无法与二维码核对")
+        complete = False
+    elif q["issue_date"] != inv.issue_date:
         inv.issues.append(f"二维码中的开票日期 {q['issue_date']} 与识别结果 {inv.issue_date} 不一致")
     if len(q["number"]) == 20:
         # 数电票：没有取得带二维码的真实样本，金额口径未经验证，不含税金额或价税合计任一一致都接受
-        if q["amount_cents"] not in (inv.amount_cents, inv.total_cents):
+        if inv.amount_cents is None and inv.total_cents is None:
+            inv.notes.append("未识别到票面金额和价税合计，无法与二维码核对")
+            complete = False
+        elif q["amount_cents"] not in (inv.amount_cents, inv.total_cents):
             inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的金额、价税合计都不一致")
         else:
             inv.notes.append("数电票二维码金额口径未经真实样本验证（不含税或价税合计任一一致即可），请人工核对金额")
+    elif inv.amount_cents is None:
+        inv.notes.append("未识别到票面不含税金额，无法与二维码核对")
+        complete = False
     elif q["amount_cents"] != inv.amount_cents:  # 旧版票：二维码金额为不含税金额（真实样本实测）
         inv.issues.append(f"二维码中的金额 {fmt(q['amount_cents'])} 与识别出的不含税金额 "
                           f"{'—' if inv.amount_cents is None else fmt(inv.amount_cents)} 不一致")
-    if not any("二维码" in x for x in inv.issues):
+    if complete and not any("二维码" in x for x in inv.issues):
         inv.notes.append("二维码核对一致：号码、日期、金额")
 
 
@@ -535,9 +614,13 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
                 text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
             if text.strip():
                 _parse_text(inv, text)
+                if not inv.doc_kind:
+                    _check_qr(inv, data)
             elif ocr is None:
                 inv.layout = "no_text"
                 inv.issues.append(NO_TEXT)
+                if _read_qr(inv, data):
+                    inv.notes.append("已读取发票二维码；仅凭二维码不能导入，请识别票面并人工核对")
                 return inv
             else:
                 try:
@@ -547,7 +630,7 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
                     return inv
                 _parse_ocr(inv, md)
                 if not inv.doc_kind:  # 小票上的二维码是开票入口，不是发票二维码，不做核对
-                    _check_ocr(inv, data)
+                    _check_ocr(inv, data, _flatten(md))
         else:
             inv.issues.append("不是 PDF、OFD 或图片文件")
             return inv
@@ -607,7 +690,7 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
                  allow_test_samples: bool = False, confirm_ocr: bool = False) -> list[dict]:
     """逐张判定：imported / duplicate / conflict / rejected。commit=False 时只预览，不写库。
     测试样张默认拒收；allow_test_samples 只给测试环境用（FH_ALLOW_TEST_SAMPLES=1 且显式放行）。
-    识别件（扫描件、图片）导入时须 confirm_ocr：操作员已对照票面核对号码和日期，否则标为 needs_confirmation、不入库。"""
+    识别件（扫描件、图片）导入时须 confirm_ocr：操作员已对照票面核对代码（如有）、号码和日期，否则标为 needs_confirmation、不入库。"""
     company = conn.execute("SELECT name, short_name FROM companies WHERE company_id=?", (company_id,)).fetchone()
     if not company:
         raise ValueError(f"企业 {company_id} 不存在")
@@ -640,11 +723,11 @@ def import_files(conn: sqlite3.Connection, company_id: str, parsed: list[ParsedI
                 r["issues"].append(f"库内或本批前面的文件中已有同号发票，内容不同：{'；'.join(diff)}")
             elif inv.layout == OCR_LAYOUT and commit and not confirm_ocr:
                 r["status"] = "needs_confirmation"
-                r["notes"].append("识别件未导入：请对照票面核对号码和日期，确认后再导入（命令行加 --confirm-ocr，网页勾选确认）")
+                r["notes"].append("识别件未导入：请对照票面核对发票代码（如有）、号码和日期，确认后再导入（命令行加 --confirm-ocr，网页勾选确认）")
             else:
                 r["status"] = "imported" if commit else "would_import"
                 if inv.layout == OCR_LAYOUT and not commit:
-                    r["notes"].append("识别件：导入时须确认已对照票面核对号码和日期")
+                    r["notes"].append("识别件：导入时须确认已对照票面核对发票代码（如有）、号码和日期")
                 now = datetime.now().isoformat(timespec="seconds")
                 c = _content(inv)
                 conn.execute("INSERT INTO invoices (company_id, invoice_id, issue_date, seller, item, amount_cents, "

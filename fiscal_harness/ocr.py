@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 import tempfile
 import time
@@ -24,6 +25,10 @@ OcrFn = Callable[[str, bytes], str]
 
 class OcrError(Exception):
     pass
+
+
+class QrConflictError(ValueError):
+    """同一文件包含多个内容不同的有效发票二维码。"""
 
 
 def is_image(data: bytes) -> bool:
@@ -80,26 +85,33 @@ def from_settings(settings) -> OcrFn | None:
 # ---------- 二维码 ----------
 
 def read_qr(data: bytes) -> str | None:
-    """读票面二维码原文（“01,”开头的发票二维码）。没装 zxing-cpp 时抛 ImportError，读不到返回 None。"""
+    """读取唯一有效的发票二维码；内容冲突时拒绝采用任意一个。"""
     import zxingcpp
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     if data[:5] == b"%PDF-":
         import pypdfium2 as pdfium
         images = [pdfium.PdfDocument(data)[0].render(scale=200 / 72).to_pil()]
     else:
-        images = [Image.open(io.BytesIO(data))]
+        images = [ImageOps.exif_transpose(Image.open(io.BytesIO(data)))]
+    found = set()
     for img in images:
         for b in zxingcpp.read_barcodes(img):
-            if b.format == zxingcpp.BarcodeFormat.QRCode and b.text.startswith("01,"):
-                return b.text
-    return None
+            if b.format == zxingcpp.BarcodeFormat.QRCode and qr_fields(b.text):
+                found.add(b.text)
+    if len(found) > 1:
+        raise QrConflictError("发现多个内容不同的发票二维码，请人工核对")
+    return next(iter(found)) if found else None
 
 
 def qr_fields(text: str) -> dict | None:
     """发票二维码：01,类型,发票代码,发票号码,金额,开票日期YYYYMMDD,校验码,…；数电票的发票代码为空。"""
     parts = text.split(",")
     if len(parts) < 6 or parts[0] != "01":
+        return None
+    if (not re.fullmatch(r"\d{8}|\d{20}", parts[3])
+            or (parts[2] and not re.fullmatch(r"\d{10}|\d{12}", parts[2]))
+            or not re.fullmatch(r"\d{8}", parts[5])):
         return None
     try:
         d = parts[5]

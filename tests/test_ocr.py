@@ -96,6 +96,32 @@ def test_ocr_legacy_layout():
     assert p.items == ["*信息技术服务*软件服务"]  # 粘连的“合计”已去掉
 
 
+@pytest.mark.parametrize("value", ["2026 09 20", "2026-09-20", "2026/09/20", "2026.09.20", "2026年09月20日"])
+def test_ocr_labeled_date_formats_match_qr(value):
+    md = OCR_LEGACY.replace("开票日期:2026年09月20日", f"开票日期:{value}")
+    p = inf.parse_bytes("scan.png", png("01,10,012345678901,12345678,100.00,20260920,1234,AB,"), ocr=fake(md))
+    assert p.issue_date == "2026-09-20"
+    assert p.issues == []
+    assert "二维码核对一致：号码、日期、金额" in p.notes
+
+
+@pytest.mark.parametrize("value", ["2026 02 30", "无法识别", "2026 09 201"])
+def test_bad_labeled_date_does_not_use_unrelated_date(value):
+    md = OCR_LEGACY.replace("开票日期:2026年09月20日", f"开票日期:{value}") + "\n合同日期:2026年09月20日\n"
+    p = inf.parse_bytes("scan.png", png("01,10,012345678901,12345678,100.00,20260920,1234,AB,"), ocr=fake(md))
+    assert p.issue_date is None
+    assert "未识别到开票日期" in p.issues
+    assert any("未识别到票面开票日期" in note and "无法与二维码核对" in note for note in p.notes)
+    assert not any("二维码中的开票日期" in issue and "不一致" in issue for issue in p.issues)
+    assert "二维码核对一致：号码、日期、金额" not in p.notes
+
+
+def test_conflicting_date_labels_are_not_guessed():
+    md = OCR_LEGACY.replace("开票日期:2026年09月20日", "开票日期:2026 09 20\n开票日期:2026 09 21")
+    p = inf.parse_bytes("scan.png", png(), ocr=fake(md))
+    assert p.issue_date is None and "未识别到开票日期" in p.issues
+
+
 @pytest.mark.parametrize("old,new,expect", [
     ("¥95.73</td></tr>", "¥95.78</td></tr>", "≠ 价税合计"),       # 税额认错一位
     ("(小写)¥1691.23", "(小写)¥1691.28", "大写金额"),             # 小写合计认错一位：两道核对都会拦

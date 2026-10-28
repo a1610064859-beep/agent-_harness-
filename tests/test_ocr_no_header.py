@@ -51,3 +51,38 @@ def test_no_header_still_cross_checks_qr():
     qr = "01,10,012345678901,12345679,100.00,20260920,1234,AB,"
     p = inf.parse_bytes("scan.png", png(qr), ocr=fake(md))
     assert any("二维码" in issue and "发票号码" in issue for issue in p.issues)
+
+
+def _paper_header():
+    return (OCR_LEGACY.replace("测试增值税电子普通发票", "北京增值税普通发票")
+            .replace("发票代码:012345678901", "012345678901")
+            .replace("发票号码:12345678", "No 12345678"))
+
+
+def test_paper_header_requires_independent_qr_and_confirmation(conn):
+    qr = "01,10,012345678901,12345678,100.00,20260920,1234,AB,"
+    p = inf.parse_bytes("paper.png", png(qr), ocr=fake(_paper_header()))
+    assert p.invoice_id == "012345678901-12345678" and not p.issues
+    assert any("代码与二维码" in note and "人工" in note for note in p.notes)
+    assert inf.import_files(conn, "C001", [p], commit=True)[0]["status"] == "needs_confirmation"
+
+
+@pytest.mark.parametrize("change", [
+    lambda qr: qr.replace("012345678901", "012345678902"),
+    lambda qr: qr.replace("12345678", "12345679"),
+    lambda qr: qr.replace("100.00", "101.00"),
+    lambda qr: qr.replace("20260920", "20260921"),
+])
+def test_paper_header_not_bound_if_qr_disagrees(change):
+    qr = "01,10,012345678901,12345678,100.00,20260920,1234,AB,"
+    p = inf.parse_bytes("paper.png", png(change(qr)), ocr=fake(_paper_header()))
+    assert p.invoice_code is None
+    assert p.issues
+
+
+def test_paper_header_ambiguous_codes_not_bound():
+    qr = "01,10,012345678901,12345678,100.00,20260920,1234,AB,"
+    md = _paper_header().replace("012345678901\n", "012345678901\n012345678902\n")
+    p = inf.parse_bytes("paper.png", png(qr), ocr=fake(md))
+    assert p.invoice_code is None
+    assert p.issues

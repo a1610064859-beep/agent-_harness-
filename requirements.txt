@@ -17,9 +17,11 @@ pydantic==2.14.1
 pydantic_core==2.50.1
 Pygments==2.21.0
 pypdf==6.21.2
+pypdfium2==5.14.0
 pytest==9.1.1
 reportlab==5.1.0
 starlette==1.10.0
 typing_extensions==4.16.0
 typing-inspection==0.4.4
 uvicorn==0.54.0
+zxing-cpp==3.1.1
