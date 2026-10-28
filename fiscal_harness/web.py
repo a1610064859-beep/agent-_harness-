@@ -89,6 +89,10 @@ def create_app(settings) -> FastAPI:
     def index():
         return FileResponse(STATIC)
 
+    @app.get("/ocr-review")
+    def ocr_review():
+        return FileResponse(STATIC.parent / "ocr_review.html", headers={"Cache-Control": "no-store"})
+
     @app.get("/api/meta")
     def meta():
         c = conn()

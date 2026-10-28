@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>发票票面人工核对</title>
+  <style>
+    body{font:16px/1.55 system-ui,'Microsoft Yahei',sans-serif;background:#f3f6f8;color:#17232f;max-width:1200px;margin:auto;padding:24px}
+    h1{margin-bottom:8px}section{background:#fff;border:1px solid #d7e0e7;border-radius:10px;padding:20px;margin:22px 0}
+    img{display:block;max-width:100%;max-height:650px;object-fit:contain;margin:auto;border:1px solid #ccd7df;cursor:zoom-in}
+    img.zoomed{position:fixed;inset:0;width:100vw;height:100vh;max-width:100vw;max-height:100vh;z-index:100;background:#fff;cursor:zoom-out}
+    label{display:flex;flex-direction:column;font-weight:600;gap:5px}.fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:20px}
+    input,select,button{font:inherit;padding:8px;border:1px solid #9caeb9;border-radius:5px;background:white}
+    button{background:#125b88;color:white;cursor:pointer}.bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}#status{min-height:1.5em}
+  </style>
+</head>
+<body>
+  <h1>发票票面人工核对</h1>
+  <p>选择本机图片，直接对照票面填写。图片和填写内容只在浏览器内处理，不发送给服务器，也不导入发票库。请使用 HTTPS、localhost 或本地文件打开本页面。</p>
+  <p>未核对的保留“待核对”，无法确定时选择“无法辨认”。“已核对并确认”的字段必须填写值。完成后导出 JSON 保存到本机；恢复时先选择相同图片，再选择 JSON，页面将按图片 SHA-256 对应数据。</p>
+  <div class="bar">
+    <label>选择图片<input id="images" type="file" accept="image/*" multiple></label>
+    <button id="save" type="button">导出人工核对 JSON</button>
+    <label>恢复已导出文件<input id="load" type="file" accept="application/json,.json"></label>
+  </div>
+  <p id="status" role="status"></p>
+  <main id="cards"></main>
+  <script>
+    const fields = [['invoice_code','发票代码'],['invoice_no','发票号码'],['issue_date','开票日期'],['buyer_name','购买方名称'],['buyer_tax_id','购买方识别号'],['seller_name','销售方名称'],['seller_tax_id','销售方识别号'],['amount','不含税金额'],['tax','税额'],['total','价税合计']];
+    const statuses = [['unreviewed','待核对'],['confirmed','已核对并确认'],['unreadable','无法辨认'],['absent','票面无此项']];
+    const $ = id => document.getElementById(id);
+    let samples = [], dirty = false;
+    const say = text => { $('status').textContent = text; };
+    async function digest(file) {
+      const value = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      return Array.from(new Uint8Array(value), b => b.toString(16).padStart(2,'0')).join('');
+    }
+    function createCard(sample) {
+      const section = document.createElement('section');
+      const title = document.createElement('h2'); title.textContent = sample.id + ' · ' + sample.name; section.append(title);
+      const help = document.createElement('p'); help.textContent = '点击票面可放大，再次点击还原。'; section.append(help);
+      const image = document.createElement('img'); image.src = sample.url; image.alt = sample.id + ' 票面图片';
+      image.onclick = () => image.classList.toggle('zoomed'); section.append(image);
+      const grid = document.createElement('div'); grid.className = 'fields';
+      for (const [key,label] of fields) {
+        const wrapper = document.createElement('label'); wrapper.append(document.createTextNode(label));
+        const input = document.createElement('input'); input.autocomplete = 'off'; input.placeholder = '只填写票面可确认的内容';
+        const select = document.createElement('select');
+        for (const [value,text] of statuses) { const option = document.createElement('option'); option.value=value; option.textContent=text; select.append(option); }
+        input.oninput = select.onchange = () => { dirty = true; };
+        sample.controls[key] = {input,select}; wrapper.append(input,select); grid.append(wrapper);
+      }
+      section.append(grid); $('cards').append(section);
+    }
+    $('images').onchange = async event => {
+      const files = Array.from(event.target.files || []);
+      if (dirty && !confirm('当前修改尚未导出，重新选择图片会清空这些修改。继续吗？')) { event.target.value=''; return; }
+      if (!window.isSecureContext || !crypto.subtle) { say('请通过 HTTPS、localhost 或本地文件打开页面，以便计算图片哈希。'); return; }
+      try {
+        const hashes = await Promise.all(files.map(digest));
+        if (new Set(hashes).size !== hashes.length) { say('选择的图片有重复内容，请去重后重选。'); return; }
+        samples.forEach(s => URL.revokeObjectURL(s.url)); $('cards').replaceChildren();
+        samples = files.map((file,index) => ({id:'P'+String(index+1).padStart(2,'0'),name:file.name,size:file.size,sha256:hashes[index],url:URL.createObjectURL(file),controls:{}}));
+        samples.forEach(createCard); dirty=false; say('已选择 '+samples.length+' 张图片。');
+      } catch { say('无法读取图片，请检查文件后重试。'); }
+    };
+    $('save').onclick = () => {
+      if (!samples.length) { say('请先选择图片。'); return; }
+      const rows=[];
+      for (const sample of samples) {
+        const row={id:sample.id,name:sample.name,size:sample.size,sha256:sample.sha256,fields:{}};
+        for (const [key] of fields) {
+          const {input,select}=sample.controls[key]; const value=input.value.trim();
+          if (select.value==='confirmed' && !value) { say('请填写所有标为“已核对并确认”的字段，或改成其他状态。'); return; }
+          row.fields[key]={status:select.value,value:select.value==='confirmed'?value:null};
+        }
+        rows.push(row);
+      }
+      const blob=new Blob([JSON.stringify({version:2,samples:rows},null,2)],{type:'application/json'});
+      const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='invoice-ground-truth-local.json'; a.click();
+      setTimeout(()=>URL.revokeObjectURL(a.href),1000); dirty=false; say('已发起保存，请将文件存放在本机私密目录。');
+    };
+    $('load').onchange = async event => {
+      try {
+        if (!samples.length) { say('请先选择图片，再恢复核对文件。'); return; }
+        const data=JSON.parse(await event.target.files[0].text());
+        if (data.version!==2 || !Array.isArray(data.samples)) throw Error('format');
+        const byHash=new Map(data.samples.map(row=>[row.sha256,row]));
+        if (byHash.size!==data.samples.length || samples.some(s=>!byHash.has(s.sha256))) { say('核对文件与所选图片不完全对应，未恢复任何内容。'); return; }
+        for (const sample of samples) {
+          const row=byHash.get(sample.sha256);
+          for (const [key] of fields) {
+            const value=row.fields?.[key];
+            if (!value || !statuses.some(s=>s[0]===value.status)) continue;
+            sample.controls[key].select.value=value.status;
+            sample.controls[key].input.value=value.status==='confirmed' && typeof value.value==='string' ? value.value : '';
+          }
+        }
+        dirty=true; say('已按图片哈希恢复，请检查后导出保存。');
+      } catch { say('无法读取核对文件，请选择本页面导出的 JSON。'); }
+    };
+    window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue=''; } });
+  </script>
+</body>
+</html>

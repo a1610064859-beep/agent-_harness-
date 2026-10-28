@@ -302,6 +302,24 @@ def _party_name(raw: str | None) -> str | None:
     return name or None
 
 
+def _legacy_header_no(text: str) -> str | None:
+    """旧版票面可能仅以 No 标注八位号码；仅使用明确的票头，不推断发票代码。"""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    titles = [i for i, line in enumerate(lines) if "增值税" in line and "发票" in line]
+    if len(titles) != 1:
+        return None
+    candidates = [(i, match.group(1)) for i, line in enumerate(lines)
+                  if (match := re.match(r"^No[ \t]*[.．:：]?[ \t]*([0-9]{8})(?![0-9])", line, re.I))]
+    if len(candidates) != 1:
+        return None
+    title = titles[0]
+    index, number = candidates[0]
+    dates = [i for i, line in enumerate(lines) if i > title and "开票日期" in line]
+    if not dates or not (title < index < dates[0]) or index - title > 12:
+        return None
+    return number
+
+
 def _parse_ocr(inv: ParsedInvoice, md: str) -> None:
     """识别件：标签与值常挤在同一格，按标签取值。金额与税额按位置取（除小写合计外的前两个 ¥ 金额），
     不在数字里挑能凑平的组合，所以认错的数字会被后面的核对拦下。"""
@@ -316,6 +334,9 @@ def _parse_ocr(inv: ParsedInvoice, md: str) -> None:
     inv.items = [re.sub(r"合\s*计?$", "", m) for m in  # 旧版版面里项目名常和下一格的“合计”粘在一起
                  re.findall(r"(\*[一-鿿][^*\s|]*\*[^\s|]+)", text)]
     inv.invoice_no = _first(r"发票号码[:：]?[ \t]*(TEST\w+|\d{20}|\d{8})(?!\d)", text)
+    if not inv.invoice_no and "发票号码" not in text and (number := _legacy_header_no(text)):
+        inv.invoice_no = number
+        inv.notes.append("票号由票头 No 标记识别，请人工对照票面核实")
     if any(m in text for m in TEST_MARKS):  # 测试样张的水印、标题即使号码认不出也要识别出来，默认拒收
         inv.is_test_sample = True
     inv.invoice_code = _first(r"发票代码[:：]?[ \t]*(\d{12}|\d{10})(?!\d)", text)

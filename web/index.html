@@ -431,6 +431,7 @@ function renderImport() {
   const can = permText() === "可查看并修改";
   $("#pane-import").innerHTML = `<h2>导入发票文件到 ${state.company}</h2>
     ${can ? "" : `<p class="banner" style="margin:0 0 10px">${state.user} 对 ${state.company} ${esc(permText())}，不能导入。</p>`}
+    <p><a href="/ocr-review" target="_blank" rel="noopener noreferrer">制作人工核对样本</a>（图片只在浏览器处理，不会导入）</p>
     <label class="drop" id="impDrop">拖入 PDF / OFD 电子发票${state.meta.ocr ? "或扫描件、图片" : ""}，或点击选择文件<input type="file" id="impFile" multiple accept=".pdf,.ofd,.png,.jpg,.jpeg,.tif,.tiff,.bmp"></label>
     <div id="impList" class="muted" style="font-size:12px;margin-bottom:8px"></div>
     ${state.meta.allow_foreign_buyer ? `<label style="display:flex;gap:6px;align-items:center;color:var(--warn)"><input type="checkbox" id="impAccept" style="width:auto">
