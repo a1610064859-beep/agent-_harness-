@@ -219,6 +219,7 @@ async function newSession() {
   state.user = $("#user").value; state.company = $("#company").value;
   const r = await api("/api/sessions", { method: "POST", body: JSON.stringify({ user_id: state.user, company_id: state.company }) });
   state.sid = r.session_id;
+  chat.files = []; renderAttached();  // 没发出的附件不带到新会话或新企业
   $("#sid").textContent = `会话 ${state.sid}`;
   $("#perm").textContent = `权限：${permText()}`;
   $("#log").innerHTML = `<div class="event">新会话：${state.user} · ${state.company}（任务记忆与长期偏好会延续，未执行的修改不会自动执行）</div>`;
@@ -280,7 +281,7 @@ function renderAttached() {
 
 async function send() {
   const text = $("#input").value.trim();
-  const files = chat.files;
+  const files = chat.files, sid = state.sid;
   if ((!text && !files.length) || !state.sid) return;
   $("#input").value = ""; $("#send").disabled = true;
   chat.files = []; renderAttached();
@@ -306,6 +307,9 @@ async function send() {
     await Promise.all([refreshSide(), showRun(r.run_id)]);
   } catch (e) {
     wait.querySelector(".bubble").innerHTML = `<span style="color:var(--bad)">请求失败：${esc(e.message)}</span>`;
+    if (files.length && state.sid === sid && !chat.files.length) {  // 附件放回，改正后可重新发送
+      chat.files = files; renderAttached();
+    }
   } finally { $("#send").disabled = false; $("#input").focus(); }
 }
 

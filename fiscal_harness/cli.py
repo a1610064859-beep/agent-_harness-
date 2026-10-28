@@ -54,6 +54,13 @@ HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 
       /attach 发票文件或目录  随下一句话附带发票（PDF、OFD、图片；程序解析校验，说“导入”才入库）  /quit 退出"""
 
 
+def _drop_attached(attached: list) -> list:
+    """换会话或企业后，之前附带、还没发出的文件不随下一句发到新会话或新企业。"""
+    if attached:
+        print(f"之前附带的 {len(attached)} 个文件没有发送，已取消；需要时请重新 /attach。")
+    return []
+
+
 def cmd_chat(args, s):
     conn = _conn(s, recover=True)
     llm = from_settings(s)
@@ -75,6 +82,7 @@ def cmd_chat(args, s):
             scope = harness.session_scope(conn, sid, s.today)
             sid = harness.start_session(conn, scope.user_id, scope.company_id)
             print(f"已开始新会话 {sid}（任务记忆与长期偏好保留，本会话的对话从头开始）")
+            attached = _drop_attached(attached)
             continue
         if text.startswith("/company"):
             parts = text.split()
@@ -82,12 +90,15 @@ def cmd_chat(args, s):
                 print("用法：/company C002")
                 continue
             scope = harness.session_scope(conn, sid, s.today)
+            before = scope.company_id  # switch_company 会改 scope
             try:
                 res = Toolbox(conn, scope).switch_company(parts[1])
             except ToolError as e:
                 print(e.message)
                 continue
             print(f"当前企业：{res['company_id']} {res['name']}（{res['permission']}）")
+            if res["company_id"] != before:
+                attached = _drop_attached(attached)
             continue
         if text == "/run":
             if last_run:

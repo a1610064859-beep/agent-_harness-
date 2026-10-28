@@ -115,20 +115,20 @@ class Toolbox:
                                          f"“{LEVEL_TEXT[level]}”，不能{'修改' if need == 'write' else '查看'}。"
                                          "这不是“没有记录”，不能回答为零。")
 
-    def _scope_user_messages(self) -> list[sqlite3.Row]:
-        """可作为出处的用户原话：本会话中当前企业最近连续的一段（切换企业前的话不再作数），本轮用户消息总算在内。"""
+    def _scope_user_messages(self) -> list[dict]:
+        """可作为出处的用户原话：本会话中当前企业最近连续的一段（切换企业前的话不再作数），本轮用户消息总算在内。
+        附带的文件名不是用户说的话，已去掉。"""
         rows = self.conn.execute("SELECT id, role, company_id, content FROM messages WHERE session_id=? ORDER BY id DESC",
                                  (self.scope.session_id,)).fetchall()
         out, latest_seen = [], False
         for r in rows:
             if r["role"] == "user" and not latest_seen:
                 latest_seen = True  # 本轮的话：可能正是它要求切换企业
-                out.append(r)
-                continue
-            if r["company_id"] != self.scope.company_id:
+            elif r["company_id"] != self.scope.company_id:
                 break
-            if r["role"] == "user":
-                out.append(r)
+            elif r["role"] != "user":
+                continue
+            out.append({**dict(r), "content": r["content"].split(ATTACH_MARK, 1)[0]})
         return out[::-1]
 
     def _session_user_texts(self) -> list[str]:
@@ -700,9 +700,8 @@ class Toolbox:
         if handled := [u for u in ids if rows[u]["status"] != "staged"]:
             raise ToolError("ALREADY_HANDLED", "这些文件已经处理过，没有再次导入：" + "；".join(
                 f"{u} {UPLOAD_STATUS[rows[u]['status']]}" for u in handled))
-        latest, *earlier = self.conn.execute("SELECT id, content FROM messages WHERE session_id=? AND role='user' "
-                                             "ORDER BY id DESC LIMIT 2", (sid,)).fetchall()
-        text = latest["content"].split(ATTACH_MARK, 1)[0]  # 文件名不算原话
+        *earlier, latest = self._scope_user_messages()
+        text = latest["content"]
         quote = _norm(user_quote)
         if not quote or quote not in _norm(text):
             raise ToolError("NOT_AUTHORIZED", "user_quote 必须逐字摘自用户本轮要求导入的原话。上传文件本身、之前的话"
@@ -710,13 +709,13 @@ class Toolbox:
         if found := intent.risks(text):
             raise ToolError("NOT_AUTHORIZED", f"用户原话{'、'.join(intent.RISK_TEXT[x] for x in found)}，没有导入。"
                                               "请等用户明确要求导入。")
-        if intent.QUESTION.search(text.strip()):
+        if intent.asks(text):
             raise ToolError("NOT_AUTHORIZED", "用户是在询问，不是要求导入，没有导入。先回答用户的问题，再请用户明确说要导入。")
         t = _norm(text)
-        dissent = bool(intent.DISSENT.search(t))
+        dissent = intent.dissents(t)
         wanted = bool(intent.IMPORT.search(t)) and not dissent
-        confirms = not dissent and bool(intent.AFFIRM.search(t) or intent.CHECKED.search(t) or wanted)
-        previous = earlier[0]["id"] if earlier else None
+        confirms = not dissent and bool(intent.CHECKED.search(t))  # 再说一遍“导入”不等于核对过票面
+        previous = earlier[-1]["id"] if earlier else None
         parsed = {u: invoice_files.from_json(rows[u]["parsed_json"]) for u in ids}
         recognized = [u for u in ids if parsed[u].layout == invoice_files.OCR_LAYOUT]
         checked = [u for u in recognized if confirms and previous is not None
@@ -757,6 +756,27 @@ class Toolbox:
                                         "用户提出异议或说了别的事，都不要导入。")
         return out
 
+    def discard_uploads(self, upload_ids: list[str], user_quote: str) -> dict:
+        """用户本轮明确说不导入的上传文件：标为不导入，不再预检，也不再列入模型输入。只改上传记录，不动发票。"""
+        self._require("read")
+        ids = list(dict.fromkeys(u.strip().upper() for u in upload_ids if u.strip()))
+        if not ids:
+            raise ToolError("BAD_ARG", "至少提供一个 upload_id。")
+        text = self._scope_user_messages()[-1]["content"]
+        quote = _norm(user_quote)
+        if not quote or quote not in _norm(text) or not intent.DISCARD.search(_norm(text)):
+            raise ToolError("NOT_AUTHORIZED", "只有用户本轮明确说不导入这些文件时才能放弃，user_quote 须逐字摘自用户本轮原话。")
+        rows = {r["upload_id"]: r for r in self.conn.execute(
+            f"SELECT * FROM uploads WHERE session_id=? AND company_id=? AND status='staged' "
+            f"AND upload_id IN ({','.join('?' * len(ids))})", (self.scope.session_id, self.scope.company_id, *ids))}
+        if missing := [u for u in ids if u not in rows]:
+            raise ToolError("NOT_FOUND", f"本会话当前企业没有待处理的上传文件 {'、'.join(missing)}。")
+        result = json.dumps({"status": "rejected", "issues": ["用户表示不导入"], "notes": []}, ensure_ascii=False)
+        for u in ids:
+            self.conn.execute("UPDATE uploads SET status='rejected', result_json=? WHERE upload_id=?", (result, u))
+        return {"discarded": [{"upload_id": u, "file": rows[u]["file_name"]} for u in ids],
+                "message": "这些文件不会导入，也不再列出；需要时请用户重新上传。"}
+
 
 ATTACH_MARK = "\n[附件] "  # 用户消息里附带的文件名列在这一行之后
 UPLOAD_STATUS = {"staged": "待处理", "would_import": "可以导入", "imported": "已导入",
@@ -786,8 +806,13 @@ def staged_uploads(conn: sqlite3.Connection, session_id: str, company_id: str) -
         return []
     parsed = [invoice_files.from_json(r["parsed_json"]) for r in rows]
     checks = invoice_files.import_files(conn, company_id, parsed)
+    # 核对确认只对紧接着的下一句有效：请核对之后用户又说了别的，就不再是“等用户确认”
+    recent = [r["id"] for r in conn.execute("SELECT id FROM messages WHERE session_id=? AND role='user' "
+                                            "ORDER BY id DESC LIMIT 2", (session_id,))]
+    previous = recent[1] if len(recent) > 1 else None
     return [{**_check_view(r["upload_id"], p), "buyer": p.buyer_name, "precheck": UPLOAD_STATUS[c["status"]],
-             "issues": c["issues"], "notes": c["notes"], "awaiting_check": r["check_after_message_id"] is not None}
+             "issues": c["issues"], "notes": c["notes"],
+             "awaiting_check": previous is not None and r["check_after_message_id"] == previous}
             for r, p, c in zip(rows, parsed, checks)]
 
 
@@ -959,6 +984,11 @@ TOOL_SPECS = [
         "用户下一句确认后再调用一次。",
         {"upload_ids": {"type": "array", "items": {"type": "string"}, "description": "上传文件编号，如 UP-1A2B3C4D"},
          "user_quote": {"type": "string", "description": "用户本轮要求导入或确认核对无误的原话（逐字摘录）"}},
+        ["upload_ids", "user_quote"]),
+    _fn("discard_uploads",
+        "用户明确说不导入某些上传文件（如“这几张不导入了”）时调用：这些文件不再列出、不能再导入。不影响库内发票。",
+        {"upload_ids": {"type": "array", "items": {"type": "string"}, "description": "上传文件编号，如 UP-1A2B3C4D"},
+         "user_quote": {"type": "string", "description": "用户本轮说不导入的原话（逐字摘录）"}},
         ["upload_ids", "user_quote"]),
 ]
 MODEL_RULES_SPECS = [s for s in TOOL_SPECS if s["function"]["name"] not in ("check_purpose", "search_rules", "get_rule")] + [

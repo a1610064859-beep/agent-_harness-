@@ -27,9 +27,16 @@ PARTS = re.compile(r"和|与|以及|及|跟|、|/")
 LEAD_VERB = re.compile(r"^(的?(用途|备注))?(都|均)?(填写|填成|填为|填|写成|写为|写|改成|改为|改|为|是|记为|记)[:：]?")
 
 IMPORT = re.compile(r"导入|入库|录入|登记|入账|保存|存进|加进|加到|添加")
-CHECKED = re.compile(r"核对(过|了|好|完|无误)|对过了|看过了|一致|无误|都对|没错")
+# 识别件的核对确认：要说到核对或无误，单说“导入”不算核对过
+CHECKED = re.compile(r"核对(过|了|好|完|无误)|对过了|看过了|一致|无误|都对|没错|没问题|确认|正确|准确")
 QUESTION = re.compile(r"吗[？?。]?$|[？?]$|能不能|可不可以|是不是|是否|能否|行不行|要不要")
+# 客气的请求（“能不能帮我把这几张导入”）不是询问；“帮我看看能不能导入”仍是询问
+POLITE_IMPORT = re.compile(r"(?:^|[，。,;；！!])(能不能|可不可以|能否|可否|可以|麻烦你?|请你?)(帮我|帮忙|替我|给我)"
+                           r"(把[^，。,;；？?吗]{0,20})?(导入|入库|录入|登记)(一下)?(吧|呢)?吗?[？?。]?$")
 DISSENT = re.compile(r"不(可以|行|对|是|同意|确认|一致|符)|有误|有错|错了|不符|对不上|不一样")
+# “没有错误”“没错了”“没有不一致的地方”是确认，判异议前先去掉
+NO_PROBLEM = re.compile(r"(没有|没|无|并无|不存在|未发现|没发现)(什么|任何)?(错误?了?|有误|不一致|不符|不对|对不上|不一样|问题|出入)")
+DISCARD = re.compile(r"不导入|不要导入|别导入|不用导入|先不导入|暂不导入|不入库|取消导入|放弃|不要了|算了|作废|删掉|删除|去掉|撤回")
 
 REMEMBER = re.compile(r"记住|记下|记一下|记着|以后|今后|往后|之后都|每次|一直|默认|始终|长期")
 ALL_COMPANIES = re.compile(r"所有企业|全部企业|每家企业|各家?企业|所有公司|每家公司|跨企业|两家|不管哪家|不论哪家|都适用|通用")
@@ -51,6 +58,17 @@ def risks(text: str) -> list[str]:
     if EXAMPLE.search(t):
         out.append("example")
     return out
+
+
+def dissents(text: str) -> bool:
+    """原话对识别结果提出了异议；“没有错误”“没错了”这类否定加否定不算。"""
+    return bool(DISSENT.search(NO_PROBLEM.sub("", re.sub(r"\s+", "", text or ""))))
+
+
+def asks(text: str) -> bool:
+    """原话是在询问（“可以导入吗？”），不是请求；“能不能帮我把这几张导入”算请求。"""
+    t = re.sub(r"\s+", "", text or "")
+    return bool(QUESTION.search(t)) and not POLITE_IMPORT.search(t)
 
 
 RISK_TEXT = {"negation": "表示暂不保存或不要修改", "condition": "带有条件（如“如果…再…”）",
