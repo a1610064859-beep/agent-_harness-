@@ -31,7 +31,7 @@ MONEY = r"(-?[\d,]+\.\d{2})"
 class ParsedInvoice:
     file_name: str
     sha256: str
-    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample / ocr_mineru / no_text
+    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample / ocr_mineru / no_text / not_invoice
     invoice_type: str | None = None  # 数电专票 / 数电普票 / 增值税电子专用发票 / 增值税电子普通发票
     invoice_no: str | None = None
     invoice_code: str | None = None
@@ -49,6 +49,7 @@ class ParsedInvoice:
     red_of: str | None = None        # 红字发票对应的蓝字发票号码（取自票面备注）
     is_test_sample: bool = False     # invoicegen 生成的测试样张（TEST 号码、满版水印），默认不导入
     qr: str | None = None            # 票面二维码原文（识别件才读），用于核对号码、日期、金额
+    doc_kind: str | None = None      # 认出不是增值税发票时的票据类别：receipt / fiscal_bill（见 NOT_INVOICE）
     issues: list[str] = field(default_factory=list)  # 阻断导入
     notes: list[str] = field(default_factory=list)   # 提示，不阻断
 
@@ -167,6 +168,27 @@ def _upper(text: str) -> str | None:
 
 TEST_MARKS = ("测试样张", "测试用模拟")
 
+# 常被当成发票拍照上传、但不是增值税发票的票据：认出来就只报这一条原因，不再逐项报“未识别到发票号码”
+NOT_INVOICE = {
+    "receipt": "这是购物小票（收银条），不是发票：请按小票上的提取码或二维码开具电子发票，再导入开出的发票文件",
+    "fiscal_bill": "这是财政电子票据（如医疗门诊收费票据），不是增值税发票，目前不支持导入；"
+                   "真伪可在全国财政电子票据查验平台 pjcy.mof.gov.cn 查验",
+}
+INVOICE_MARKS = re.compile(r"发票号码|发票代码|价税合计|纳税人识别号|开票日期|购买方|销售方")
+RECEIPT_MARKS = re.compile(r"收银条|小票|提取码|申请电子发票|扫码开票|开具\S{0,10}发票")
+
+
+def _doc_kind(text: str) -> str | None:
+    """票面上有发票特有的栏目就按发票处理（漏识的号码等照常报问题），避免把真发票误判成小票拒收。
+    财政票据也印“开票日期”，所以先按“票据代码”认它，再用其余发票栏目排除小票。"""
+    if re.search(r"发票号码|发票代码", text):
+        return None
+    if "票据代码" in text and re.search(r"票据号码|交款人|收款单位", text):
+        return "fiscal_bill"
+    if not INVOICE_MARKS.search(text) and RECEIPT_MARKS.search(text):
+        return "receipt"
+    return None
+
 
 def _parse_text(inv: ParsedInvoice, text: str) -> None:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -177,6 +199,10 @@ def _parse_text(inv: ParsedInvoice, text: str) -> None:
     if any(m in text for m in TEST_MARKS) or re.search(r"发票号码[:：]\s*TEST", text):
         inv.layout = "test_sample"
         _parse_test_sample(inv, text)
+        return
+    inv.doc_kind = _doc_kind(text)
+    if inv.doc_kind:
+        inv.layout = "not_invoice"
         return
     no = _first(r"发票号码[:：]\s*([0-9][0-9 ]{6,}[0-9])", text)
     if no:
@@ -281,6 +307,9 @@ def _parse_ocr(inv: ParsedInvoice, md: str) -> None:
     不在数字里挑能凑平的组合，所以认错的数字会被后面的核对拦下。"""
     inv.layout = OCR_LAYOUT
     text = _flatten(md)
+    if not any(m in text for m in TEST_MARKS) and (kind := _doc_kind(text)):
+        inv.doc_kind = kind
+        return
     inv.issue_date = _date(text)
     inv.invoice_type = _type(text)
     inv.total_upper = _upper(text)
@@ -416,6 +445,9 @@ def _parse_ofd(inv: ParsedInvoice, z: zipfile.ZipFile) -> None:
 # ---------- 入口：解析与校验 ----------
 
 def _validate(inv: ParsedInvoice) -> None:
+    if inv.doc_kind:
+        inv.issues.append(NOT_INVOICE[inv.doc_kind])
+        return
     for label, value in (("发票号码", inv.invoice_no), ("开票日期", inv.issue_date), ("销售方名称", inv.seller_name),
                          ("价税合计", inv.total_cents)):
         if value is None:
@@ -489,7 +521,8 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
                     inv.issues.append(f"识别失败：{e}")
                     return inv
                 _parse_ocr(inv, md)
-                _check_ocr(inv, data)
+                if not inv.doc_kind:  # 小票上的二维码是开票入口，不是发票二维码，不做核对
+                    _check_ocr(inv, data)
         else:
             inv.issues.append("不是 PDF、OFD 或图片文件")
             return inv

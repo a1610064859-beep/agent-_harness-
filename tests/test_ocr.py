@@ -120,6 +120,72 @@ def test_test_sample_watermark_is_caught_in_ocr(conn):
     assert inf.import_files(conn, "C001", [p])[0]["status"] == "rejected"
 
 
+# 真实图库照片的识别结构（2026-10-27 本机 MinerU 实测），内容全部改为虚构：医疗门诊收费票据与购物小票
+OCR_FISCAL_BILL = """## 某市医疗门诊收费票据（电子）
+
+<details>
+<summary>seal</summary>
+
+财政部监制
+</details>
+
+票据代码:31000000
+
+交款人统一社会信用代码:110101\\*\\*\\*\\*\\*\\*\\*\\*0000
+
+交款人: 测试人
+
+票据号码:0100000001
+
+校验码:abc123
+
+开票日期:2026-09-11
+
+<table><tr><td>项目名称</td><td>数量/单位</td><td>金额(元)</td></tr><tr><td>西药费</td><td></td><td>100.00</td></tr><tr><td colspan="3">金额合计(大写)壹佰元整 (小写)100.00</td></tr></table>
+
+收款单位(章):测试医院
+"""
+
+OCR_RECEIPT = """## 测试餐厅
+
+<table><tr><td colspan="2">测试店 2026-08-11 12:31</td></tr><tr><td>茶碗蒸</td><td>1</td><td>10.00</td></tr><tr><td>合计</td><td></td><td>10.00</td></tr></table>
+
+电子发票开票共两种方式:
+1. 请登录网站开具您的增值税电子普通发票（提取码是获取发票的唯一凭证）。
+
+提取码:202608110000000000
+
+2.扫描下方二维码（有效期30日），根据指引步骤开具您的增值税电子普通发票。
+
+![Image block](doc:0/tier:standard/page:1/block:8)
+"""
+
+
+@pytest.mark.parametrize("md,kind,expect", [
+    (OCR_FISCAL_BILL, "fiscal_bill", "财政电子票据"),
+    (OCR_RECEIPT, "receipt", "购物小票"),
+    ("## 测试服饰\n\n** 收银条 **\n\n合计 257.00\n\n扫描下述二维码，开具增值税电子普通发票。", "receipt", "购物小票"),
+    ("单号:100000001\n\n实付 78.3\n\n1 扫二维码申请电子发票。\n\n4.若原单出现退换货，请重新扫码开票。", "receipt", "购物小票"),
+])
+def test_non_invoice_photos_get_one_clear_reason(md, kind, expect, conn):
+    p = inf.parse_bytes("photo.jpg", png(), ocr=fake(md))
+    assert p.doc_kind == kind
+    assert len(p.issues) == 1 and expect in p.issues[0], p.issues
+    assert not any("二维码" in x for x in p.notes)  # 小票上的二维码是开票入口，不当发票二维码核对
+    assert inf.import_files(conn, "C001", [p])[0]["status"] == "rejected"
+
+
+def test_invoice_with_misread_number_is_not_taken_for_receipt():
+    md = OCR_DIGITAL.replace("发票号码:26312000000000000001", "") + "\n扫码开具发票请联系销售方\n"
+    p = inf.parse_bytes("scan.png", png(), ocr=fake(md))
+    assert p.doc_kind is None and "未识别到发票号码" in p.issues
+
+
+def test_fiscal_bill_text_layer_pdf_is_recognised():
+    p = inf.parse_text(inf._flatten(OCR_FISCAL_BILL))
+    assert p.layout == "not_invoice" and p.doc_kind == "fiscal_bill" and len(p.issues) == 1
+
+
 def test_uscc_check_digit():
     assert inf.uscc_ok("91330100MA2CTEN01X") is False  # 虚构税号：校验位不符
     assert inf.uscc_ok("91110000000000000Y") is False
