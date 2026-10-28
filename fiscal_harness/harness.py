@@ -48,12 +48,20 @@ def session_scope(conn: sqlite3.Connection, session_id: str, today) -> tools.Sco
     return tools.Scope(session_id, row["user_id"], row["company_id"], today)
 
 
-def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id: str, user_message: str) -> TurnResult:
+def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id: str, user_message: str,
+             attachments: list | None = None) -> TurnResult:
+    """attachments：随这条消息上传、已由程序解析校验的发票（invoice_files.ParsedInvoice），暂存待用户要求导入。"""
     scope = session_scope(conn, session_id, settings.today)
     scope.run_id = "R-" + uuid.uuid4().hex[:12]
+    if attachments:
+        user_message += tools.ATTACH_MARK + "、".join(a.file_name for a in attachments)
     log = RunLog(conn, scope.run_id, session_id, scope.user_id, scope.company_id, user_message, llm.model)
-    conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) VALUES (?,?,?,?,?,?)",
-                 (session_id, scope.company_id, "user", redact(user_message), scope.run_id, _now()))
+    cur = conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) "
+                       "VALUES (?,?,?,?,?,?)",
+                       (session_id, scope.company_id, "user", redact(user_message), scope.run_id, _now()))
+    if attachments:
+        staged = tools.stage_uploads(conn, scope, cur.lastrowid, attachments)
+        log.step("uploads", {"staged": dict(zip(staged, (a.file_name for a in attachments)))})
     box = tools.Toolbox(conn, scope)
 
     system, selected = context.build_system(conn, scope, settings.variant)

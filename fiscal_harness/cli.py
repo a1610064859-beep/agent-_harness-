@@ -50,7 +50,8 @@ def cmd_init(args, s):
 
 # ---------- 对话 ----------
 
-HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 新会话  /run 查看上一轮运行记录  /memory 查看记忆  /quit 退出"""
+HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 新会话  /run 查看上一轮运行记录  /memory 查看记忆
+      /attach 发票文件或目录  随下一句话附带发票（PDF、OFD、图片；程序解析校验，说“导入”才入库）  /quit 退出"""
 
 
 def cmd_chat(args, s):
@@ -58,7 +59,8 @@ def cmd_chat(args, s):
     llm = from_settings(s)
     sid = args.session or harness.start_session(conn, args.user, args.company)
     print(f"会话 {sid}｜用户 {args.user}｜企业 {args.company}｜模型 {llm.model}\n{HELP}")
-    last_run = None
+    last_run, attached = None, []
+    recognizer = ocr.from_settings(s)
     while True:
         try:
             text = input("\n你> ").strip()
@@ -95,11 +97,24 @@ def cmd_chat(args, s):
             scope = harness.session_scope(conn, sid, s.today)
             _out(Toolbox(conn, scope).list_memories())
             continue
+        if text.startswith("/attach"):
+            try:
+                files = invoice_files.collect(text.split()[1:])
+                if not files:
+                    print("用法：/attach 发票.pdf 扫描件.jpg 发票目录/")
+                    continue
+                attached += [invoice_files.parse_file(f, recognizer) for f in files]
+            except OSError as e:
+                print(f"读不到文件：{e}")
+                continue
+            print(f"已附带 {len(attached)} 个文件，随下一句话发送：" + "、".join(a.file_name for a in attached))
+            continue
         try:
-            res = harness.run_turn(conn, llm, s, sid, text)
+            res = harness.run_turn(conn, llm, s, sid, text, attachments=attached)
         except LLMError as e:
             print(f"[模型错误] {e}")
             continue
+        attached = []
         last_run = res.run_id
         trail = "，".join(f"{c['tool']}{'' if c['ok'] else '✗' + (c['error'] or '')}" for c in res.tool_calls)
         print(f"\n助手> {res.reply}")

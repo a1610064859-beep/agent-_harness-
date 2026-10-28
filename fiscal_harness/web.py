@@ -23,8 +23,14 @@ class NewSession(BaseModel):
     company_id: str
 
 
+class UploadedFile(BaseModel):
+    name: str
+    data: str  # base64
+
+
 class Message(BaseModel):
-    text: str
+    text: str = ""
+    files: list[UploadedFile] = []  # 随消息上传的发票：程序解析校验后暂存，导入由对话中用户明确要求
 
 
 class RuleVersion(BaseModel):
@@ -41,11 +47,6 @@ class RuleVersion(BaseModel):
 class RuleStatus(BaseModel):
     session_id: str
     status: str
-
-
-class UploadedFile(BaseModel):
-    name: str
-    data: str  # base64
 
 
 class InvoiceUpload(BaseModel):
@@ -134,12 +135,29 @@ def create_app(settings) -> FastAPI:
                                            "WHERE session_id=? ORDER BY id", (sid,))]
         return {**dict(row), "messages": msgs}
 
+    def parse_uploads(files: list[UploadedFile]) -> list[invoice_files.ParsedInvoice]:
+        parsed = []
+        for f in files:
+            try:
+                data = base64.b64decode(f.data, validate=True)
+            except (binascii.Error, ValueError):
+                raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
+            parsed.append(invoice_files.parse_bytes(Path(f.name).name, data, recognizer))
+        return parsed
+
     @app.post("/api/sessions/{sid}/messages")
     def send(sid: str, body: Message):
-        if not body.text.strip():
+        parsed = []
+        if body.files:
+            viewer(sid)  # 上传至少要能查看当前企业；导入另需修改权限，由导入工具把关
+            if len(body.files) > 10:
+                raise HTTPException(400, "一条消息最多附带 10 个文件")
+            parsed = parse_uploads(body.files)
+        text = body.text.strip() or (f"上传了 {len(parsed)} 个发票文件" if parsed else "")
+        if not text:
             raise HTTPException(400, "消息为空")
         try:
-            res = harness.run_turn(conn(), llm, settings, sid, body.text.strip())
+            res = harness.run_turn(conn(), llm, settings, sid, text, attachments=parsed)
         except ValueError as e:
             raise HTTPException(404, str(e))
         except LLMError as e:
@@ -187,13 +205,7 @@ def create_app(settings) -> FastAPI:
             raise HTTPException(403, "未开启 FH_ALLOW_TEST_SAMPLES，不能导入测试样张")
         if not body.files or len(body.files) > 50:
             raise HTTPException(400, "一次上传 1–50 个文件")
-        parsed = []
-        for f in body.files:
-            try:
-                data = base64.b64decode(f.data, validate=True)
-            except (binascii.Error, ValueError):
-                raise HTTPException(400, f"{f.name} 不是有效的 base64 内容")
-            parsed.append(invoice_files.parse_bytes(Path(f.name).name, data, recognizer))
+        parsed = parse_uploads(body.files)
         results = invoice_files.import_files(c, company_id, parsed, commit=body.commit,
                                              accept_buyer_mismatch=body.accept_buyer_mismatch,
                                              allow_test_samples=body.allow_test_samples, confirm_ocr=body.confirm_ocr)

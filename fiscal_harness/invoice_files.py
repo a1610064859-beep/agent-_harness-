@@ -649,6 +649,15 @@ def parse_text(text: str, name: str = "text") -> ParsedInvoice:
     return inv
 
 
+def to_json(inv: ParsedInvoice) -> str:
+    return json.dumps(asdict(inv), ensure_ascii=False)
+
+
+def from_json(text: str) -> ParsedInvoice:
+    """还原暂存的解析结果（对话中上传的文件），导入时不必重新识别。"""
+    return ParsedInvoice(**json.loads(text))
+
+
 def parse_file(path: Path, ocr: ocr_mod.OcrFn | None = None) -> ParsedInvoice:
     return parse_bytes(path.name, path.read_bytes(), ocr)
 

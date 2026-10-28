@@ -9,7 +9,7 @@ import sqlite3
 from datetime import date, timedelta
 
 from . import knowledge, memory
-from .tools import LEVEL_TEXT, Scope, _pref_view, _task_view
+from .tools import LEVEL_TEXT, Scope, _pref_view, _task_view, staged_uploads
 
 POLICY = """\
 你是企业财税资料助手，帮助用户查询发票与银行资料、补充发票用途或备注、检查未完成事项。所有企业、数据和规则都是比赛模拟内容。
@@ -27,6 +27,7 @@ POLICY = """\
 6. 发票和银行流水没有逐条对应关系，不能凭金额、日期或交易方推断已付款。无权限或查询失败不等于没有记录，不能说成 0。
 7. 长期偏好只在用户明确要求“记住”时保存，更正或删除也要用户本轮明确要求，都要逐字摘录用户原话；只有用户明确说对所有企业适用时才跨企业保存。偏好不能改变权限、规则或用户本轮的明确要求。
 8. 任务记忆：任务记忆里没有目标、或用户提出了新的工作目标（如检查某月用途、补齐缺失信息）时，调用 update_task 用一句话记下目标；全部处理完或用户说不再处理时 complete_task。
+9. 上传的发票文件：程序已解析和校验，结果列在下面“本会话上传的发票文件”。先按预检结果告诉用户每个文件识别出的发票、能否导入及原因；上传本身不算要求导入，用户明确要求导入时才调用 import_uploaded_invoices。识别件（图片、扫描件）入库前，请用户对照票面核对程序列出的发票代码（如有）、号码和开票日期（销售方和金额一并列出供参考），用户下一句确认核对无误即再次调用导入，不要再追问其他项。导入不能改发票的金额等票面内容，识别有误时请用户重新上传清晰图片。
 
 回复要求：像正常业务交流，先直接给结果，再给必要依据和下一步；说清已完成和未完成的事；只追问缺少的信息；少套话、少重复，不机械列点。金额单位为元，保留两位小数。提到发票时写出发票编号（如 F003），说清改了哪张。不要在回复中提到工具名、字段名或系统内部机制；没有通过工具保存的内容，不要说已经记下或保存。"""
 
@@ -72,6 +73,16 @@ def build_system(conn: sqlite3.Connection, scope: Scope, variant: str = "baselin
     if not prefs:
         lines.append("- 无")
 
+    if (current["level"] or "none") != "none" and (ups := staged_uploads(conn, scope.session_id, scope.company_id)):
+        lines.append("\n## 本会话上传的发票文件（程序已解析与校验，尚未入库）")
+        for u in ups:
+            lines.append(f"- [{u['upload_id']}] {u['file']}{'（识别件）' if u['recognized'] else ''}："
+                         f"{_upload_face(u)}；预检：{u['precheck']}"
+                         + (f"；原因：{'；'.join(u['issues'])}" if u["issues"] else "")
+                         + (f"；提示：{'；'.join(u['notes'])}" if u["notes"] else "")
+                         + ("；已请用户核对票面，等用户确认" if u["awaiting_check"] else ""))
+        selected["uploads"] = [u["upload_id"] for u in ups]
+
     if variant == "model_rules":
         # 对照组：不给程序解析结果，规则全文需模型调用 list_rule_documents 自行判断
         lines.append("\n## 规则\n- 需要规则时调用 list_rule_documents 获取全部规则文档，自行判断适用版本并执行检查。")
@@ -92,6 +103,13 @@ def build_system(conn: sqlite3.Connection, scope: Scope, variant: str = "baselin
             lines.append(f"  - 不可用：{e['rule']}（{e['reason']}）")
     scope.memory_refs = list(selected["memories"])
     return "\n".join(lines), selected
+
+
+def _upload_face(u: dict) -> str:
+    if not u["invoice_id"]:
+        return "未识别出发票号码"
+    return "，".join(x for x in (f"发票 {u['invoice_id']}", u["issue_date"], u["seller"] and f"销售方 {u['seller']}",
+                                 u["buyer"] and f"购买方 {u['buyer']}", u["total"] and f"价税合计 {u['total']} 元") if x)
 
 
 def rule_drift(conn: sqlite3.Connection, company_id: str, task: sqlite3.Row) -> dict | None:

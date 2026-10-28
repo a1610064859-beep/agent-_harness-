@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from . import intent, knowledge, memory
+from . import intent, invoice_files, knowledge, memory
 from .money import fmt
 
 LEVEL_TEXT = {"write": "可查看并修改", "read": "仅查看", "none": "无权访问"}
@@ -681,6 +681,122 @@ class Toolbox:
         _scrub_runs(self.conn, row["content"], f"[已删除的记忆 {memory_id}]")
         return {"memory_id": memory_id, "deleted": True}
 
+    # ---------- 对话中上传的发票文件 ----------
+
+    def import_uploaded_invoices(self, upload_ids: list[str], user_quote: str) -> dict:
+        """导入本会话、当前企业下上传并经程序校验的发票。只认用户本轮原话；上传本身不算要求导入。
+        识别件（图片、扫描件）先列出代码、号码、日期和金额请用户对照票面核对，紧接着的下一句明确确认才入库。"""
+        self._require("write")
+        ids = list(dict.fromkeys(u.strip().upper() for u in upload_ids if u.strip()))
+        if not ids:
+            raise ToolError("BAD_ARG", "至少提供一个 upload_id。")
+        sid, cid = self.scope.session_id, self.scope.company_id
+        rows = {r["upload_id"]: r for r in self.conn.execute(
+            f"SELECT * FROM uploads WHERE session_id=? AND company_id=? AND upload_id IN ({','.join('?' * len(ids))})",
+            (sid, cid, *ids))}
+        if missing := [u for u in ids if u not in rows]:
+            raise ToolError("NOT_FOUND", f"本会话当前企业没有上传文件 {'、'.join(missing)}。"
+                                         "只能导入用户在本会话、当前企业下上传的文件。")
+        if handled := [u for u in ids if rows[u]["status"] != "staged"]:
+            raise ToolError("ALREADY_HANDLED", "这些文件已经处理过，没有再次导入：" + "；".join(
+                f"{u} {UPLOAD_STATUS[rows[u]['status']]}" for u in handled))
+        latest, *earlier = self.conn.execute("SELECT id, content FROM messages WHERE session_id=? AND role='user' "
+                                             "ORDER BY id DESC LIMIT 2", (sid,)).fetchall()
+        text = latest["content"].split(ATTACH_MARK, 1)[0]  # 文件名不算原话
+        quote = _norm(user_quote)
+        if not quote or quote not in _norm(text):
+            raise ToolError("NOT_AUTHORIZED", "user_quote 必须逐字摘自用户本轮要求导入的原话。上传文件本身、之前的话"
+                                              "或你的推断都不算导入要求，请先问用户是否导入。")
+        if found := intent.risks(text):
+            raise ToolError("NOT_AUTHORIZED", f"用户原话{'、'.join(intent.RISK_TEXT[x] for x in found)}，没有导入。"
+                                              "请等用户明确要求导入。")
+        if intent.QUESTION.search(text.strip()):
+            raise ToolError("NOT_AUTHORIZED", "用户是在询问，不是要求导入，没有导入。先回答用户的问题，再请用户明确说要导入。")
+        t = _norm(text)
+        dissent = bool(intent.DISSENT.search(t))
+        wanted = bool(intent.IMPORT.search(t)) and not dissent
+        confirms = not dissent and bool(intent.AFFIRM.search(t) or intent.CHECKED.search(t) or wanted)
+        previous = earlier[0]["id"] if earlier else None
+        parsed = {u: invoice_files.from_json(rows[u]["parsed_json"]) for u in ids}
+        recognized = [u for u in ids if parsed[u].layout == invoice_files.OCR_LAYOUT]
+        checked = [u for u in recognized if confirms and previous is not None
+                   and rows[u]["check_after_message_id"] == previous]
+        if not wanted and not checked:
+            raise ToolError("NOT_AUTHORIZED", "用户对识别结果提出了异议，没有导入。请按用户的说法核实；识别有误时请用户"
+                                              "重新上传清晰的图片，或在导入页对照票面处理。" if dissent else
+                            "用户这句话没有要求导入，也不是对上一轮列出的识别结果的确认，没有导入。")
+        to_check = [u for u in recognized if u not in checked]
+        go = [u for u in ids if u not in to_check]
+        results = dict(zip(go, invoice_files.import_files(self.conn, cid, [parsed[u] for u in go], commit=True,
+                                                         confirm_ocr=True))) if go else {}
+        awaiting = []
+        if to_check:
+            for u, r in zip(to_check, invoice_files.import_files(self.conn, cid, [parsed[u] for u in to_check])):
+                if r["status"] == "would_import":
+                    awaiting.append(u)
+                else:  # 本来就不能导入的识别件不必再请用户核对
+                    results[u] = r
+        last = latest["id"]
+        for u in awaiting:
+            self.conn.execute("UPDATE uploads SET check_after_message_id=? WHERE upload_id=?", (last, u))
+        for u, r in results.items():
+            self.conn.execute("UPDATE uploads SET status=?, result_json=? WHERE upload_id=?",
+                              (r["status"], json.dumps(r, ensure_ascii=False), u))
+        out = {"imported": [{"upload_id": u, "file": parsed[u].file_name, "invoice_id": parsed[u].invoice_id,
+                             "issue_date": parsed[u].issue_date, "total": fmt(parsed[u].total_cents),
+                             "notes": r["notes"]} for u, r in results.items() if r["status"] == "imported"],
+               "not_imported": [{"upload_id": u, "file": parsed[u].file_name, "status": UPLOAD_STATUS[r["status"]],
+                                 "issues": r["issues"]} for u, r in results.items() if r["status"] != "imported"],
+               "awaiting_check": [_check_view(u, parsed[u]) for u in awaiting]}
+        if out["imported"]:
+            out["message"] = f"已入库 {len(out['imported'])} 张，用途与备注为空；具体数据以查询为准。"
+        if awaiting:
+            out["check_instruction"] = ("识别件尚未导入：请用户对照票面原件核对每张的发票代码（如有）、号码和开票日期（没有校验位，"
+                                        "只能人工核对）；销售方和价税合计一并列出供参考，金额已由程序校验。用户下一句确认核对无误"
+                                        "（如“对过了，没问题”）后，用那句原话作为 user_quote 再次调用，不要再追问别的项；"
+                                        "用户提出异议或说了别的事，都不要导入。")
+        return out
+
+
+ATTACH_MARK = "\n[附件] "  # 用户消息里附带的文件名列在这一行之后
+UPLOAD_STATUS = {"staged": "待处理", "would_import": "可以导入", "imported": "已导入",
+                 "duplicate": "库内已有同一张票，无需导入", "conflict": "库内已有同号但内容不同的票，不能导入",
+                 "rejected": "不能导入"}
+
+
+def stage_uploads(conn: sqlite3.Connection, scope: Scope, message_id: int,
+                  parsed: list[invoice_files.ParsedInvoice]) -> list[str]:
+    """暂存用户随消息上传的发票解析结果（未入库），绑定会话、用户、企业与这条消息。"""
+    ids = []
+    for inv in parsed:
+        uid = ("UP-" + uuid.uuid4().hex[:8]).upper()
+        conn.execute("INSERT INTO uploads (upload_id, session_id, user_id, company_id, message_id, file_name, sha256, "
+                     "parsed_json, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (uid, scope.session_id, scope.user_id, scope.company_id, message_id, inv.file_name, inv.sha256,
+                      invoice_files.to_json(inv), "staged", _now()))
+        ids.append(uid)
+    return ids
+
+
+def staged_uploads(conn: sqlite3.Connection, session_id: str, company_id: str) -> list[dict]:
+    """本会话、当前企业待处理的上传文件，附程序预检（与导入同一套校验，只预览不写库）。"""
+    rows = conn.execute("SELECT * FROM uploads WHERE session_id=? AND company_id=? AND status='staged' "
+                        "ORDER BY created_at, rowid", (session_id, company_id)).fetchall()
+    if not rows:
+        return []
+    parsed = [invoice_files.from_json(r["parsed_json"]) for r in rows]
+    checks = invoice_files.import_files(conn, company_id, parsed)
+    return [{**_check_view(r["upload_id"], p), "buyer": p.buyer_name, "precheck": UPLOAD_STATUS[c["status"]],
+             "issues": c["issues"], "notes": c["notes"], "awaiting_check": r["check_after_message_id"] is not None}
+            for r, p, c in zip(rows, parsed, checks)]
+
+
+def _check_view(upload_id: str, p: invoice_files.ParsedInvoice) -> dict:
+    return {"upload_id": upload_id, "file": p.file_name, "recognized": p.layout == invoice_files.OCR_LAYOUT,
+            "invoice_id": p.invoice_id, "invoice_code": p.invoice_code, "invoice_no": p.invoice_no,
+            "issue_date": p.issue_date, "seller": p.seller_name,
+            "total": None if p.total_cents is None else fmt(p.total_cents)}
+
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
@@ -837,6 +953,13 @@ TOOL_SPECS = [
         {"memory_id": {"type": "string"},
          "user_quote": {"type": "string", "description": "用户本轮要求删除的原话（逐字摘录）"}},
         ["memory_id", "user_quote"]),
+    _fn("import_uploaded_invoices",
+        "把用户在本会话上传、程序已校验的发票文件导入当前企业。仅在用户本轮明确要求导入时调用，上传本身不算要求。"
+        "识别件（图片、扫描件）第一次调用不会入库，会返回待核对的字段：逐项告诉用户并请其对照票面核对，"
+        "用户下一句确认后再调用一次。",
+        {"upload_ids": {"type": "array", "items": {"type": "string"}, "description": "上传文件编号，如 UP-1A2B3C4D"},
+         "user_quote": {"type": "string", "description": "用户本轮要求导入或确认核对无误的原话（逐字摘录）"}},
+        ["upload_ids", "user_quote"]),
 ]
 MODEL_RULES_SPECS = [s for s in TOOL_SPECS if s["function"]["name"] not in ("check_purpose", "search_rules", "get_rule")] + [
     _fn("list_rule_documents", "返回与当前企业相关的全部规则文档（各版本原文与状态），由你自行判断适用哪一版。", {}, [])]

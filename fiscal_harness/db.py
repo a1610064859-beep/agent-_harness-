@@ -149,6 +149,22 @@ CREATE TABLE IF NOT EXISTS pending_changes (
     status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed')),
     created_at TEXT NOT NULL
 );
+-- 对话中附带的发票文件：程序解析与校验后暂存，未入库。导入须用户本轮明确要求；
+-- 识别件（图片、扫描件）还须紧接着的下一句用户原话确认已对照票面核对
+CREATE TABLE IF NOT EXISTS uploads (
+    upload_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    company_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,       -- 附带该文件的用户消息
+    file_name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    parsed_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('staged', 'imported', 'duplicate', 'conflict', 'rejected')),
+    check_after_message_id INTEGER,    -- 识别件：请用户核对票面时最近一条用户消息
+    result_json TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
