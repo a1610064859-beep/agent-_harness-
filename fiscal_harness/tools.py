@@ -2,7 +2,9 @@
 
 - 用户、企业由会话绑定后注入，模型参数里没有这两项，无法越权改范围。
 - 金额、合计、用途检查全部由程序计算；规则版本由 knowledge.resolve 解析。
-- 写入只开放发票用途与备注，需本会话用户原话作授权凭证，写后回读核验，同一修改幂等。
+- 写入只开放发票用途与备注，需本会话用户原话作授权凭证，并由程序逐张、逐字段、按月份绑定；
+  原话不足以直接写入时记为待确认修改，等用户下一句明确确认。写后回读核验，同一修改幂等。
+- 规则与记忆同样按权限和本轮用户原话校验，不依赖模型自觉。
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from . import knowledge, memory
+from . import intent, knowledge, memory
 from .money import fmt
 
 LEVEL_TEXT = {"write": "可查看并修改", "read": "仅查看", "none": "无权访问"}
@@ -48,8 +50,6 @@ class Scope:
     memory_refs: list[str] = field(default_factory=list)  # 本轮选用的记忆
 
 
-# 用户在来源原话里明确表示暂不保存：守卫只用来拒绝写入，不用来判断意图或放行
-SAVE_NEGATION = re.compile(r"(别|不要|不用|不必|勿|先不|暂不|暂时不|还不)(急着?)?(保存|写入|提交)")
 FIELD_LABELS = {"purpose": "用途", "remark": "备注"}
 # 两个点名或两个字段名之间只隔这些词时视为同一组（_norm 已去掉顿号、逗号等标点）
 CONNECTIVE = re.compile(r"(和|与|及|以及|跟|还有|的)*")
@@ -167,29 +167,34 @@ class Toolbox:
     def _named_invoices(self, text: str) -> set[str]:
         return {i for _, _, i in self._mentions(text)[0]}
 
-    def _value_bound(self, text: str, invoice_id: str, field_name: str, value: str) -> bool:
-        """值是否在原话里明确给了这张发票的这个字段。
+    def _value_bound(self, text: str, invoice_id: str, field_name: str, value: str) -> str:
+        """值是否在原话里明确给了这张发票的这个字段：返回 "ok"、"ambiguous"（需用户确认）或 "no"。
 
-        原话按点名的发票切段（“F002和F003”这类只隔连接词的点名合为一段）；段内取值前最近的字段名
-        （“用途和备注”合为一组）。值前没有字段名时按用途理解，如“F004是出差住宿”。没点名发票的原话
-        （如“就填X，保存”）对象取自之前的点名，整句都算。只用于拒绝，不据此决定写入。"""
+        原话按点名的发票切段（“F002和F003”这类只隔连接词的点名合为一组）；段内取值前最近的字段名
+        （“用途和备注”合为一组）。值前没有字段名时按用途理解，如“F004是出差住宿”；值前紧挨着否定
+        （“不要填快递”）不算。一组多张发票时，“分别”句式按顺序一一对应，“都/均”表示同一个值，
+        其他说法分不清各张的值，记为含糊。没点名发票的原话（如“就填X，保存”）对象取自之前的点名，整句都算。"""
         norm, spans = _spaced(text), self._mentions(text)[0]
         groups: list[list] = []
         for s, e, i in spans:
             if groups and CONNECTIVE.fullmatch(_norm(norm[groups[-1][2]:s])):
-                groups[-1][0].add(i)
+                if i not in groups[-1][0]:
+                    groups[-1][0].append(i)
                 groups[-1][2] = e
             else:
-                groups.append([{i}, s, e])
+                groups.append([[i], s, e])
         if not groups:
-            segments = [_norm(norm)]
+            segments = [([invoice_id], _norm(norm), text)]
         else:
             bounds = [g[1] for g in groups] + [len(norm)]
             if len(groups) == 1:
                 bounds[0] = 0  # 只点名了一组发票时，点名之前的话也算这一组的
-            segments = [_norm(norm[bounds[k]:bounds[k + 1]]) for k, g in enumerate(groups) if invoice_id in g[0]]
+            # _spaced 与原话逐字对齐，同样的切分位置也取出带标点的原话片段，供“分别”句式拆值
+            segments = [(g[0], _norm(norm[bounds[k]:bounds[k + 1]]), text[bounds[k]:bounds[k + 1]])
+                        for k, g in enumerate(groups) if invoice_id in g[0]]
         v = _norm(value)
-        for seg in segments:
+        result = "no"
+        for members, seg, raw in segments:
             labels: list[list] = []
             for s, e, f in sorted((m.start(), m.end(), f) for f, lab in FIELD_LABELS.items()
                                   for m in re.finditer(lab, seg)):
@@ -198,14 +203,33 @@ class Toolbox:
                     labels[-1][2] = e
                 else:
                     labels.append([{f}, s, e])
+
+            def field_at(pos):
+                before = [g for g in labels if g[2] <= pos]
+                return before[-1][0] if before else {"purpose"}
+
+            if len(members) > 1 and intent.SPLIT_EACH.search(seg):
+                parts = [_norm(x) for x in intent.split_each(raw)]
+                if len(parts) != len(members):
+                    result = "ambiguous" if v in seg else result
+                elif parts[members.index(invoice_id)] == v and field_name in field_at(seg.index("分别")):
+                    return "ok"
+                continue
             for m in re.finditer(re.escape(v), seg):
-                before = [g for g in labels if g[2] <= m.start()]
-                if field_name in (before[-1][0] if before else {"purpose"}):
-                    return True
-        return False
+                if intent.VALUE_NEGATED.search(seg[max(0, m.start() - 6):m.start()]):
+                    continue
+                if field_name in field_at(m.start()):
+                    if len(members) > 1 and not intent.SAME_FOR_ALL.search(seg):
+                        result = "ambiguous"
+                        break
+                    return "ok"
+        return result
 
     def _authorize_write(self, invoice_id: str, user_quote: str, changes: dict) -> int:
-        """修改授权绑定到当前企业、发票、字段值和一条来源原话；返回来源消息 id。"""
+        """修改授权绑定到当前企业、发票、日期、字段值和一条来源原话；返回来源消息 id。
+
+        原话清楚到能由程序逐张、逐字段对应时直接写入；带条件、不确定、举例，或多张发票的内容对应不清时，
+        程序记下待确认修改并拒绝写入，只有紧接着的下一句用户原话明确确认，才按记下的内容写入。"""
         msgs = self._scope_user_messages()
         quote = _norm(user_quote)
         sources = [m for m in msgs if quote and quote in _norm(m["content"])]
@@ -213,35 +237,123 @@ class Toolbox:
             raise ToolError("NOT_AUTHORIZED", "user_quote 必须逐字摘自用户在本次会话、当前企业下要求修改的一句原话。"
                                               "之前会话的草稿、切换企业前的话或模型自己的推断都不能作为修改授权，请向用户确认。")
         src = sources[-1]
-        if SAVE_NEGATION.search(_norm(src["content"])):
-            raise ToolError("NOT_AUTHORIZED", "用户在这句原话里表示暂不保存，不能据此修改。请等用户明确要求保存。")
-        basis, named = [src], self._named_invoices(src["content"])
-        if not named:
-            # 原话没点名发票（如“可以了，保存吧”）：对象取自它之前最近一条点名了发票的用户原话
-            earlier = [m for m in msgs if m["id"] < src["id"] and self._named_invoices(m["content"])]
-            if earlier:
-                basis.append(earlier[-1])
-                named = self._named_invoices(earlier[-1]["content"])
+        found = intent.risks(src["content"])
+        if "negation" in found:
+            raise ToolError("NOT_AUTHORIZED", "用户在这句原话里表示暂不保存或不要修改，不能据此修改。请等用户明确要求保存。")
+        if not self._points_at_invoice(src):
+            return self._authorize_confirmation(src, msgs, invoice_id, changes, found)
+        problems = found + ([] if intent.ACTION.search(_norm(src["content"])) else ["no_action"])
+        if self._bind(src, invoice_id, changes):
+            problems.append("ambiguous")
+        row = self._target_invoice(invoice_id, [src])
+        if problems:
+            self._propose(row, changes, problems)
+        return src["id"]
+
+    def _points_at_invoice(self, msg: sqlite3.Row) -> bool:
+        named, ambiguous = self._mentions(msg["content"])
+        return bool(named or ambiguous)
+
+    def _authorize_confirmation(self, src: sqlite3.Row, msgs: list[sqlite3.Row], invoice_id: str, changes: dict,
+                                found: list[str]) -> int:
+        """没点名发票的原话（如“确认”“可以了，保存吧”）：只能确认上一轮程序记下的修改，或之前点名过的发票。"""
+        text = _norm(src["content"])
+        if found or not (intent.SAVE.search(text) or intent.AFFIRM.search(text)):
+            raise ToolError("NOT_AUTHORIZED", "这句原话没有明确确认修改，不能据此写入。请向用户确认。")
+        prev = self.conn.execute("SELECT MAX(id) FROM messages WHERE session_id=? AND role='user' AND id<?",
+                                 (self.scope.session_id, src["id"])).fetchone()[0]
+        proposals = self.conn.execute(
+            "SELECT * FROM pending_changes WHERE session_id=? AND user_id=? AND company_id=? AND status='pending' "
+            "AND after_message_id=?", (self.scope.session_id, self.scope.user_id, self.scope.company_id, prev)).fetchall()
+        if proposals:
+            for p in proposals:
+                if p["invoice_id"] == invoice_id and json.loads(p["changes_json"]) == changes:
+                    self.conn.execute("UPDATE pending_changes SET status='confirmed' WHERE change_id=?", (p["change_id"],))
+                    return src["id"]
+            raise ToolError("CHANGE_NOT_CONFIRMED", "用户确认的是上一轮列出的修改，不包括这一项。请按列出的内容修改，"
+                                                    "或向用户重新确认。",
+                            pending_changes=[_proposal_view(p) for p in proposals])
+        # 没有待确认修改：对象取自之前最近一条点名了发票的原话（如“先别保存”之后的“可以了，保存吧”）
+        if not intent.SAVE.search(text):
+            raise ToolError("NOT_AUTHORIZED", "这句原话没有明确要求保存，不能据此写入。请向用户确认。")
+        earlier = [m for m in msgs if m["id"] < src["id"] and self._points_at_invoice(m)]
+        if not earlier:
+            raise ToolError("INVOICE_NOT_REQUESTED", f"用户原话没有点名要修改的发票，不能修改 {invoice_id}。请向用户确认。",
+                            named_invoices=[])
+        prior = earlier[-1]
+        if "example" in intent.risks(prior["content"]):
+            raise ToolError("NOT_AUTHORIZED", "用户之前那句只是举例或假设，不能当作修改要求。请向用户确认。")
+        ambiguous = self._bind(prior, invoice_id, changes, also=src)
+        row = self._target_invoice(invoice_id, [prior, src])
+        if ambiguous:
+            self._propose(row, changes, ["ambiguous"])
+        return src["id"]
+
+    def _bind(self, msg: sqlite3.Row, invoice_id: str, changes: dict, also: sqlite3.Row | None = None) -> bool:
+        """发票须是 msg 点名的；内容须是用户对这张发票、这个字段给出的原文（also 是之后没点名的补充原话，
+        如“就填X，保存”）。返回是否对应不清（需用户确认）。"""
+        named = self._named_invoices(msg["content"])
         if invoice_id not in named:
-            for m in basis:
-                for no, candidates in self._mentions(m["content"])[1].items():
-                    if invoice_id in candidates:
-                        raise ToolError("INVOICE_AMBIGUOUS", f"用户只说了号码 {no}，当前企业有 {len(candidates)} 张同号码的"
-                                                             f"旧版发票：{'、'.join(candidates)}。请向用户确认发票代码。",
-                                        candidates=candidates)
+            for no, candidates in self._mentions(msg["content"])[1].items():
+                if invoice_id in candidates:
+                    raise ToolError("INVOICE_AMBIGUOUS", f"用户只说了号码 {no}，当前企业有 {len(candidates)} 张同号码的"
+                                                         f"旧版发票：{'、'.join(candidates)}。请向用户确认发票代码。",
+                                    candidates=candidates)
             raise ToolError("INVOICE_NOT_REQUESTED", f"用户原话要求修改的是 {'、'.join(sorted(named)) or '（未点名发票）'}，"
                                                      f"不是 {invoice_id}。请按用户点名的发票操作，或向用户确认。",
                             named_invoices=sorted(named))
+        basis = [msg] + ([also] if also else [])
         text = _norm("".join(m["content"] for m in basis))
+        ambiguous = False
         for k, v in changes.items():
             label = FIELD_LABELS[k]
             if _norm(v) not in text:
                 raise ToolError("CONTENT_NOT_FROM_USER", f"{label}“{v}”没有出现在用户要求修改的原话中。"
                                                          "请使用用户给出的原文，不能根据销售方或项目名称补写。")
-            if not any(self._value_bound(m["content"], invoice_id, k, v) for m in basis):
-                raise ToolError("VALUE_NOT_FOR_TARGET", f"用户原话里的“{v}”不是给 {invoice_id} 的{label}的（可能属于另一张"
-                                                        "发票或另一个字段）。请按原话逐张、逐字段对应；对应不清时向用户确认。")
-        return src["id"]
+            bound = {self._value_bound(m["content"], invoice_id, k, v) for m in basis}
+            if "ok" not in bound:
+                if "ambiguous" not in bound:
+                    raise ToolError("VALUE_NOT_FOR_TARGET", f"用户原话里的“{v}”不是给 {invoice_id} 的{label}的（可能属于"
+                                                            "另一张发票或另一个字段，或被用户否定）。请按原话逐张、逐字段对应；"
+                                                            "对应不清时向用户确认。")
+                ambiguous = True
+        return ambiguous
+
+    def _target_invoice(self, invoice_id: str, basis: list[sqlite3.Row]) -> sqlite3.Row:
+        """目标发票须存在于当前企业；原话说了月份时，发票的开票月份必须一致。"""
+        row = self._read_invoice(self.scope.company_id, invoice_id)
+        if row is None:
+            raise ToolError("NOT_FOUND", f"企业 {self.scope.company_id} 没有发票 {invoice_id}。发票由企业编号和发票编号"
+                                         "共同确定，不能修改其他企业的同编号发票。")
+        months = mentioned_months([m["content"] for m in basis], self.scope.today)
+        if months and row["issue_date"][:7] not in months:
+            raise ToolError("INVOICE_MONTH_MISMATCH", f"用户说的是 {'、'.join(sorted(months))} 的 {invoice_id}，"
+                                                      f"但当前企业的 {invoice_id} 开票日期是 {row['issue_date']}。"
+                                                      "请先按用户说的月份查询，并向用户确认是哪一张。",
+                            invoice_date=row["issue_date"], requested_months=sorted(months))
+        return row
+
+    def _propose(self, row: sqlite3.Row, changes: dict, problems: list[str]) -> None:
+        """记下待确认修改并拒绝本次写入。确认只对紧接着的下一句用户原话有效。"""
+        last = self.conn.execute("SELECT MAX(id) FROM messages WHERE session_id=? AND role='user'",
+                                 (self.scope.session_id,)).fetchone()[0]
+        payload = json.dumps(changes, ensure_ascii=False, sort_keys=True)
+        p = self.conn.execute("SELECT * FROM pending_changes WHERE session_id=? AND company_id=? AND invoice_id=? "
+                              "AND changes_json=? AND after_message_id=? AND status='pending'",
+                              (self.scope.session_id, self.scope.company_id, row["invoice_id"], payload, last)).fetchone()
+        if not p:
+            cid = "PC-" + uuid.uuid4().hex[:10]
+            self.conn.execute("INSERT INTO pending_changes (change_id, session_id, user_id, company_id, invoice_id, "
+                              "issue_date, changes_json, after_message_id, reason, status, created_at) "
+                              "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                              (cid, self.scope.session_id, self.scope.user_id, self.scope.company_id, row["invoice_id"],
+                               row["issue_date"], payload, last, ",".join(problems), "pending", _now()))
+            p = self.conn.execute("SELECT * FROM pending_changes WHERE change_id=?", (cid,)).fetchone()
+        view = _proposal_view(p)
+        raise ToolError("NEEDS_CONFIRMATION", f"用户原话{'、'.join(intent.RISK_TEXT[x] for x in problems)}，没有写入。"
+                                              f"请向用户逐项说明：{view['summary']}，并请用户明确确认。用户下一句明确确认后，"
+                                              "再用那句确认原话作为 user_quote 重新提交；用户没有确认或另有说法时不要修改。",
+                        pending_change=view)
 
     def _check_month(self, month: str) -> str:
         if not month or not MONTH_RE.match(month):
@@ -354,6 +466,7 @@ class Toolbox:
                 "hint": "空白或只有空格视为未填写；备注不能代替用途；不能根据销售方或项目名称推测用途。"}
 
     def search_rules(self, query: str, month: str | None = None) -> dict:
+        self._require("read")  # 企业适用的规则属于该企业资料，无权访问的企业不能查看
         as_of = date.fromisoformat(_month_bounds(self._check_month(month))[1]) if month else self.scope.today
         result = knowledge.search(self.conn, self.scope.company_id, query, as_of=as_of)
         for s in result["snippets"]:
@@ -363,6 +476,7 @@ class Toolbox:
         return result
 
     def get_rule(self, rule_id: str, month: str | None = None) -> dict:
+        self._require("read")
         as_of = date.fromisoformat(_month_bounds(self._check_month(month))[1]) if month else self.scope.today
         rule = knowledge.full_text(self.conn, self.scope.company_id, rule_id.strip().upper(), as_of=as_of)
         if not rule:
@@ -372,6 +486,7 @@ class Toolbox:
 
     def list_rule_documents(self) -> dict:
         """仅用于对比实验的对照组：不做适用性解析，原样返回与当前企业相关的全部规则版本。"""
+        self._require("read")
         rows = self.conn.execute("SELECT * FROM rule_versions ORDER BY rule_id, effective_from").fetchall()
         docs = [{"rule_id": r["rule_id"], "name": r["name"], "version": r["version"], "status": r["status"],
                  "effective_from": r["effective_from"], "companies": json.loads(r["companies"]), "text": r["body"]}
@@ -502,12 +617,49 @@ class Toolbox:
 
     # ---------- 长期偏好 ----------
 
+    def _memory_request(self, user_quote: str, marker, what: str) -> sqlite3.Row:
+        """记忆的新增、更正、删除都要有本轮用户明确的话，且这句话表达了对应的要求。"""
+        quote = _norm(user_quote)
+        latest = self._scope_user_messages()[-1:]  # 只认本轮用户原话，不能拿早先的话补授权
+        if not quote or not latest or quote not in _norm(latest[0]["content"]):
+            raise ToolError("NOT_AUTHORIZED", f"只有用户在本轮明确要求{what}时才能操作长期偏好，"
+                                              "user_quote 须逐字摘自用户本轮原话。")
+        src = latest[0]
+        if not marker.search(_norm(src["content"])):
+            raise ToolError("NOT_AUTHORIZED", f"用户这句话没有要求{what}，不能操作长期偏好。")
+        return src
+
+    def _grounded(self, content: str, src: sqlite3.Row) -> str:
+        content = content.strip()
+        if intent.coverage(content, src["content"], _norm) < 0.6:
+            raise ToolError("CONTENT_NOT_FROM_USER", "偏好内容要使用用户原话里的意思和措辞，不能补充用户没说的要求。")
+        return content
+
+    def _target_memory(self, memory_id: str, src: sqlite3.Row) -> sqlite3.Row:
+        """要操作的记忆须是用户点到的那条：说了编号，或原话与这条的内容重合最多（如“称呼那条”）；
+        当前只有一条偏好时可省略。"""
+        prefs = memory.preferences(self.conn, self.scope.user_id, self.scope.company_id)
+        row = next((p for p in prefs if p["memory_id"] == memory_id), None)
+        if row is None:
+            raise ToolError("NOT_FOUND", f"当前用户和企业下没有记忆 {memory_id}。")
+        score = {p["memory_id"]: intent.coverage(p["content"], src["content"], _norm) for p in prefs}
+        latest = sorted(prefs, key=lambda p: p["updated_at"])[-1]["memory_id"]  # 同一秒内的按保存先后
+        named = (memory_id.upper() in _norm(src["content"]).upper()
+                 or (score[memory_id] > 0 and all(v < score[memory_id] for k, v in score.items() if k != memory_id))
+                 or (intent.RECENT.search(_norm(src["content"])) and memory_id == latest))
+        if not named and len(prefs) != 1:
+            raise ToolError("MEMORY_NOT_REQUESTED", f"用户这句话没有指明要操作 {memory_id}（{row['content']}）。"
+                                                    "请向用户确认是哪一条。", preferences=[_pref_view(p) for p in prefs])
+        return row
+
     def remember_preference(self, content: str, user_quote: str, all_companies: bool = False) -> dict:
-        if not user_quote or _norm(user_quote) not in _norm("".join(self._session_user_texts())):
-            raise ToolError("NOT_AUTHORIZED", "只有用户在本会话中明确要求记住的内容才能保存为长期偏好，"
-                                              "user_quote 须是用户原话。")
+        src = self._memory_request(user_quote, intent.REMEMBER, "记住")
+        if intent.DELETE.search(_norm(src["content"])):
+            raise ToolError("NOT_AUTHORIZED", "用户这句话是要求不记或删除，不能保存为长期偏好。")
+        if all_companies and not intent.ALL_COMPANIES.search(_norm(src["content"])):
+            raise ToolError("SCOPE_NOT_CONFIRMED", "用户没有说这条偏好对所有企业都适用，只能保存到当前企业。")
         mid = memory.add_preference(self.conn, self.scope.user_id, None if all_companies else self.scope.company_id,
-                                    content.strip())
+                                    self._grounded(content, src))
         return {"memory_id": mid, "scope": "该用户的所有企业" if all_companies else f"仅 {self.scope.company_id}"}
 
     def list_memories(self) -> dict:
@@ -515,15 +667,17 @@ class Toolbox:
         task = memory.open_task(self.conn, self.scope.user_id, self.scope.company_id)
         return {"preferences": [_pref_view(p) for p in prefs], "open_task": _task_view(self.conn, task) if task else None}
 
-    def update_memory(self, memory_id: str, content: str) -> dict:
-        if not memory.update_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id, content.strip()):
-            raise ToolError("NOT_FOUND", f"当前用户和企业下没有记忆 {memory_id}。")
-        return {"memory_id": memory_id, "content": content.strip()}
+    def update_memory(self, memory_id: str, content: str, user_quote: str) -> dict:
+        src = self._memory_request(user_quote, intent.EDIT, "更正偏好")
+        self._target_memory(memory_id, src)
+        content = self._grounded(content, src)
+        memory.update_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id, content)
+        return {"memory_id": memory_id, "content": content}
 
-    def forget_memory(self, memory_id: str) -> dict:
-        row = self.conn.execute("SELECT content FROM memories WHERE memory_id=?", (memory_id,)).fetchone()
-        if not memory.delete_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id):
-            raise ToolError("NOT_FOUND", f"当前用户和企业下没有记忆 {memory_id}。")
+    def forget_memory(self, memory_id: str, user_quote: str) -> dict:
+        src = self._memory_request(user_quote, intent.DELETE, "删除偏好")
+        row = self._target_memory(memory_id, src)
+        memory.delete_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id)
         _scrub_runs(self.conn, row["content"], f"[已删除的记忆 {memory_id}]")
         return {"memory_id": memory_id, "deleted": True}
 
@@ -614,6 +768,13 @@ def _invoice_view(r: sqlite3.Row) -> dict:
             "purpose_filled": bool((r["purpose"] or "").strip())}
 
 
+def _proposal_view(p: sqlite3.Row) -> dict:
+    changes = json.loads(p["changes_json"])
+    parts = "，".join(f"{FIELD_LABELS[k]}改为“{v}”" for k, v in changes.items())
+    return {"change_id": p["change_id"], "invoice_id": p["invoice_id"], "date": p["issue_date"], "changes": changes,
+            "summary": f"{p['invoice_id']}（{p['issue_date']}）{parts}"}
+
+
 def _pref_view(p: sqlite3.Row) -> dict:
     return {"memory_id": p["memory_id"], "content": p["content"],
             "scope": "所有企业" if p["company_id"] is None else p["company_id"], "revision": p["revision"]}
@@ -651,7 +812,7 @@ TOOL_SPECS = [
         {"rule_id": {"type": "string", "description": "如 R002"}, "month": MONTH}, ["rule_id"]),
     _fn("update_invoice",
         "修改当前企业一张发票的用途和/或备注，保存后程序会回读核对。仅在用户本次会话明确要求修改时调用；"
-        "内容必须使用用户给出的原文。",
+        "内容必须使用用户给出的原文。返回 NEEDS_CONFIRMATION 时没有写入，需先请用户确认列出的修改。",
         {"invoice_id": {"type": "string"},
          "purpose": {"type": "string", "description": "用户给出的用途原文"},
          "remark": {"type": "string", "description": "用户给出的备注原文"},
@@ -668,9 +829,14 @@ TOOL_SPECS = [
          "all_companies": {"type": "boolean", "description": "仅当用户明确说对所有企业都适用时为 true"}},
         ["content", "user_quote"]),
     _fn("list_memories", "列出当前用户在当前企业可用的长期偏好和任务记忆。", {}, []),
-    _fn("update_memory", "按用户要求更正一条长期偏好。",
-        {"memory_id": {"type": "string"}, "content": {"type": "string"}}, ["memory_id", "content"]),
-    _fn("forget_memory", "按用户要求删除一条长期偏好。", {"memory_id": {"type": "string"}}, ["memory_id"]),
+    _fn("update_memory", "按用户本轮明确要求更正一条长期偏好。",
+        {"memory_id": {"type": "string"}, "content": {"type": "string", "description": "用户给出的新内容"},
+         "user_quote": {"type": "string", "description": "用户本轮要求更正的原话（逐字摘录）"}},
+        ["memory_id", "content", "user_quote"]),
+    _fn("forget_memory", "按用户本轮明确要求删除一条长期偏好。",
+        {"memory_id": {"type": "string"},
+         "user_quote": {"type": "string", "description": "用户本轮要求删除的原话（逐字摘录）"}},
+        ["memory_id", "user_quote"]),
 ]
 MODEL_RULES_SPECS = [s for s in TOOL_SPECS if s["function"]["name"] not in ("check_purpose", "search_rules", "get_rule")] + [
     _fn("list_rule_documents", "返回与当前企业相关的全部规则文档（各版本原文与状态），由你自行判断适用哪一版。", {}, [])]

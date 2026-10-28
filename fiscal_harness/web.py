@@ -85,6 +85,18 @@ def create_app(settings) -> FastAPI:
                                      f"不能{'修改' if need == 'write' else '查看'}")
         return c, row["user_id"], row["company_id"]
 
+    def require_rule_write(c, user_id: str, companies: list[str]) -> None:
+        """规则可能由多家企业共用：改动前逐一核对用户对每家受影响企业都有修改权限，不只看当前会话企业。"""
+        if not companies:
+            raise HTTPException(400, "规则必须指定适用企业")
+        lacking = []
+        for cid in companies:
+            lv = c.execute("SELECT level FROM permissions WHERE user_id=? AND company_id=?", (user_id, cid)).fetchone()
+            if not lv or lv["level"] != "write":
+                lacking.append(cid)
+        if lacking:
+            raise HTTPException(403, f"{user_id} 对 {'、'.join(lacking)} 没有修改权限，不能更改适用于这些企业的规则")
+
     @app.get("/")
     def index():
         return FileResponse(STATIC)
@@ -248,12 +260,18 @@ def create_app(settings) -> FastAPI:
 
     @app.post("/api/rules")
     def add_rule(body: RuleVersion):
-        c, _, _ = viewer(body.session_id, need="write")
+        c, user_id, _ = viewer(body.session_id, need="write")
+        rule_id = body.rule_id.strip().upper()
+        prev = c.execute("SELECT companies FROM rule_versions WHERE rule_id=? ORDER BY effective_from DESC, created_at DESC",
+                         (rule_id,)).fetchone()
+        # 新版本影响的企业：本次指定的，以及该规则此前适用的（新版本会取代它们的旧版本）
+        targets = set(body.companies or []) | set(json.loads(prev["companies"]) if prev else [])
+        require_rule_write(c, user_id, sorted(targets))
         params = None
         if body.purpose_required_min not in (None, ""):
             params = {"purpose_required_min_cents": to_cents(body.purpose_required_min)}
         try:
-            rule = knowledge.add_version(c, body.rule_id.strip().upper(), body.version.strip(), body.body.strip(),
+            rule = knowledge.add_version(c, rule_id, body.version.strip(), body.body.strip(),
                                          name=body.name or None, companies=body.companies or None,
                                          effective_from=body.effective_from, params=params)
         except (ValueError, TypeError) as e:
@@ -262,9 +280,13 @@ def create_app(settings) -> FastAPI:
 
     @app.post("/api/rules/{rule_id}/{version}/status")
     def rule_status(rule_id: str, version: str, body: RuleStatus):
-        c, _, _ = viewer(body.session_id, need="write")
+        c, user_id, _ = viewer(body.session_id, need="write")
         if body.status not in ("active", "disabled"):
             raise HTTPException(400, "status 只能是 active 或 disabled")
+        row = c.execute("SELECT companies FROM rule_versions WHERE rule_id=? AND version=?", (rule_id, version)).fetchone()
+        if not row:
+            raise HTTPException(404, f"找不到规则 {rule_id} {version} 版")
+        require_rule_write(c, user_id, json.loads(row["companies"]))
         try:
             knowledge.set_status(c, rule_id, version, body.status)
         except ValueError as e:

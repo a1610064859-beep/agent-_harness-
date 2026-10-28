@@ -27,9 +27,22 @@ def test_turn_records_input_tools_and_reply(conn, settings):
 
 def test_citation_not_returned_by_tools_is_flagged(conn, settings):
     sid = harness.start_session(conn, "U001", "C001")
-    llm = ScriptedLLM([{"content": "依据《甲企业发票用途规则》1.0 版，1000 元以下不用填。"}])
+    bad = {"content": "依据《甲企业发票用途规则》1.0 版，1000 元以下不用填。"}
+    llm = ScriptedLLM([bad, bad])  # 程序请模型补查后仍然照旧引用
     res = harness.run_turn(conn, llm, settings, sid, "用途规则是什么？")
     assert res.anomalies and "1.0" in res.anomalies[0]
+    assert "[程序核对]" in llm.calls[1][-1]["content"]
+
+
+def test_citation_retry_fetches_the_rule(conn, settings):
+    sid = harness.start_session(conn, "U001", "C001")
+    llm = ScriptedLLM([
+        {"content": "依据《甲企业发票用途规则》1.0 版，1000 元以下不用填。"},
+        {"tool_calls": [tool_call("get_rule", {"rule_id": "R002"})]},
+        {"content": "依据《甲企业发票用途规则》2.0 版，每张发票都必须填写用途。"},
+    ])
+    res = harness.run_turn(conn, llm, settings, sid, "用途规则是什么？")
+    assert res.status == "completed" and res.anomalies == [] and "2.0" in res.reply
 
 
 def test_history_does_not_cross_company(conn, settings):

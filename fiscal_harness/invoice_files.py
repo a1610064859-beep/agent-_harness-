@@ -207,7 +207,7 @@ def _parse_text(inv: ParsedInvoice, text: str) -> None:
     no = _first(r"发票号码[:：]\s*([0-9][0-9 ]{6,}[0-9])", text)
     if no:
         inv.invoice_no = no.replace(" ", "")
-        inv.invoice_code = _first(r"发票代码[:：]\s*(\d{10,12})", text)
+        inv.invoice_code = _first(r"发票代码[:：]\s*(\d+)", text)  # 位数在 _validate 统一核对
     if "统一社会信用代码" in text and inv.invoice_no:
         inv.layout = "pdf_digital"
         _parse_digital(inv, text, lines)
@@ -479,8 +479,11 @@ def _validate(inv: ParsedInvoice) -> None:
         inv.notes.append("测试样张：由测试发票生成器生成（满版水印、TEST 号码），非真实发票")
         if inv.invoice_no and not re.fullmatch(r"TEST\w{1,32}", inv.invoice_no):
             inv.issues.append(f"测试样张号码格式不符：{inv.invoice_no}")
-    elif inv.invoice_no and not (len(inv.invoice_no) == 20 or (len(inv.invoice_no) == 8 and inv.invoice_code)):
+    elif inv.invoice_no and not (re.fullmatch(r"\d{20}", inv.invoice_no)
+                                 or (re.fullmatch(r"\d{8}", inv.invoice_no) and inv.invoice_code)):
         inv.issues.append(f"发票号码格式不符：{inv.invoice_no}（数电票为 20 位；旧版为 8 位号码加 10/12 位代码）")
+    if inv.invoice_code is not None and not inv.is_test_sample and not re.fullmatch(r"\d{10}|\d{12}", inv.invoice_code):
+        inv.issues.append(f"发票代码格式不符：{inv.invoice_code}（旧版发票代码为 10 位或 12 位数字）")
     if inv.total_cents is not None:
         if inv.amount_cents is None or inv.tax_cents is None:
             inv.issues.append("未识别到金额或税额，无法核对价税合计")
@@ -493,7 +496,8 @@ def _validate(inv: ParsedInvoice) -> None:
             except ValueError as e:
                 inv.issues.append(f"大写金额无法解析：{e}")
         else:
-            inv.notes.append("未识别到大写金额，只核对了金额与税额")
+            # 正式发票都印有大写金额；缺了就无法完成大小写核对，不导入
+            inv.issues.append("未识别到大写金额，无法核对大写与小写一致")
         if inv.total_cents < 0:
             m = re.search(r"被红冲蓝字\S*?(?:发票号码|号码)[:：]?\s*(\d{8,20})", inv.face_remark or "")
             inv.red_of = m.group(1) if m else None

@@ -1,0 +1,140 @@
+[
+ {
+  "case_id": "W4",
+  "category": "查询",
+  "title": "跨企业顺序查询两家结果都给出",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11507,
+   "completion_tokens": 367
+  },
+  "seconds": 5.0,
+  "transcript": [
+   {
+    "session": "S-988351296f",
+    "user": "U001",
+    "text": "先查甲企业2026年9月F002，再切换乙企业查2026年9月F002。",
+    "reply": "两家企业的 2026 年 9 月 F002 都查到了：\n\n**甲企业**\n- F002，日期 2026-09-08，销售方为书林图文（模拟），项目为复印纸、打印服务，金额 800.00 元\n- 用途、备注均未填写\n\n**乙企业（当前企业）**\n- F002，日期 2026-09-08，销售方为星河印刷（模拟），项目为宣传资料印刷，金额 1000.00 元\n- 用途、备注均未填写\n\n两家企业的 F002 不是同一张发票，销售方和金额都不同。需要为乙企业的这张 F002 补填用途或备注吗？",
+    "run_id": "R-4568278b9b04",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "switch_company",
+      "args": "{\"company\": \"C002\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "W4",
+  "category": "查询",
+  "title": "跨企业顺序查询两家结果都给出",
+  "attempt": 2,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11608,
+   "completion_tokens": 451
+  },
+  "seconds": 5.0,
+  "transcript": [
+   {
+    "session": "S-b94a6ca8f4",
+    "user": "U001",
+    "text": "先查甲企业2026年9月F002，再切换乙企业查2026年9月F002。",
+    "reply": "两家企业 2026 年 9 月的 F002 分别是：\n\n- 甲企业：F002，日期 2026-09-08，销售方为书林图文（模拟），项目为复印纸、打印服务，金额 800.00 元，用途和备注均未填。\n- 乙企业（当前企业）：F002，日期 2026-09-08，销售方为星河印刷（模拟），项目为宣传资料印刷，金额 1000.00 元，用途和备注均未填。\n\n两张属于不同企业，编号相同但内容不同。需要补填用途或备注的话，请说明是哪一家、具体写什么内容。",
+    "run_id": "R-209a9ea98f5d",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "switch_company",
+      "args": "{\"company\": \"C002\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "case_id": "W4",
+  "category": "查询",
+  "title": "跨企业顺序查询两家结果都给出",
+  "attempt": 3,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 11618,
+   "completion_tokens": 507
+  },
+  "seconds": 5.5,
+  "transcript": [
+   {
+    "session": "S-80bd59c89b",
+    "user": "U001",
+    "text": "先查甲企业2026年9月F002，再切换乙企业查2026年9月F002。",
+    "reply": "两家企业的这张发票都查到了：\n\n**甲企业 2026年9月 F002**\n- 日期：2026-09-08\n- 销售方：书林图文（模拟）\n- 项目：复印纸、打印服务\n- 金额：800.00 元\n- 用途：未填；备注：无\n\n**乙企业 2026年9月 F002**（当前企业）\n- 日期：2026-09-08\n- 销售方：星河印刷（模拟）\n- 项目：宣传资料印刷\n- 金额：1,000.00 元\n- 用途：未填；备注：无\n\n两张发票的用途都还空着。需要我在乙企业这张上补用途或备注吗？另外，乙企业 9 月是否还有其他待补用途的发票，我也可以一并检查。",
+    "run_id": "R-b3f96f66aa85",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "switch_company",
+      "args": "{\"company\": \"C002\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": [\"F002\"]}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ }
+]

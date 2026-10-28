@@ -155,9 +155,11 @@ def test_preferences_scope_update_delete(box_for, conn):
     assert [p["memory_id"] for p in box_for("U001", "C001").list_memories()["preferences"]] == [mid]
     assert box_for("U001", "C002").list_memories()["preferences"] == []
     assert box_for("U002", "C001").list_memories()["preferences"] == []
-    box.update_memory(mid, "先给合计，明细只列编号")
+    say(conn, box.scope.session_id, "C001", "把先给合计那条改成：先给合计，明细只列编号")
+    box.update_memory(mid, "先给合计，明细只列编号", user_quote="先给合计，明细只列编号")
     assert box.list_memories()["preferences"][0]["revision"] == 2
-    box.forget_memory(mid)
+    say(conn, box.scope.session_id, "C001", "删掉先给合计这条偏好")
+    box.forget_memory(mid, user_quote="删掉先给合计这条偏好")
     assert box.list_memories()["preferences"] == []
     assert conn.execute("SELECT content FROM memories WHERE memory_id=?", (mid,)).fetchone()[0] is None
 

@@ -134,6 +134,21 @@ CREATE TABLE IF NOT EXISTS operations (
     created_at TEXT NOT NULL,
     recovered_at TEXT                  -- 由启动恢复流程补做回读核验的时间
 );
+-- 原话不足以直接写入时由程序记下的待确认修改：绑定会话、用户、企业、发票、日期与字段值，
+-- 只有紧接着的下一句用户原话明确确认，才能按这里记下的内容写入
+CREATE TABLE IF NOT EXISTS pending_changes (
+    change_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    company_id TEXT NOT NULL,
+    invoice_id TEXT NOT NULL,
+    issue_date TEXT NOT NULL,
+    changes_json TEXT NOT NULL,
+    after_message_id INTEGER NOT NULL, -- 提出时最近一条用户消息
+    reason TEXT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed')),
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
