@@ -194,6 +194,9 @@ function permText() { return state.meta.permissions[`${state.user}/${state.compa
 async function init() {
   state.meta = await api("/api/meta");
   $("#metaline").textContent = `模型 ${state.meta.model} · 业务日期 ${state.meta.today} · 全部数据为比赛模拟内容`;
+  if (!state.meta.file_import) {  // 发票文件导入是附加功能，默认关闭（FH_FILE_IMPORT=1 开启）
+    for (const el of [$(".attach"), $('.tabs button[data-tab="import"]')]) el.style.display = "none";
+  }
   $("#user").innerHTML = state.meta.users.map((u) => `<option value="${u.user_id}">${u.user_id} ${esc(u.name)}</option>`).join("");
   $("#company").innerHTML = state.meta.companies.map((c) => `<option value="${c.company_id}">${c.company_id} ${esc(c.short_name)}</option>`).join("");
   $("#quick").innerHTML = QUICK.map((q) => `<button>${esc(q)}</button>`).join("");

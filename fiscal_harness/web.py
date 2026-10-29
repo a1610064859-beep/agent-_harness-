@@ -102,8 +102,13 @@ def create_app(settings) -> FastAPI:
     def index():
         return FileResponse(STATIC)
 
+    def need_file_import():
+        if not settings.file_import:
+            raise HTTPException(403, "未开启发票文件导入（附加功能，初赛范围外）；需要时设置 FH_FILE_IMPORT=1")
+
     @app.get("/ocr-review")
     def ocr_review():
+        need_file_import()
         return FileResponse(STATIC.parent / "ocr_review.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/meta")
@@ -115,7 +120,7 @@ def create_app(settings) -> FastAPI:
         return {"users": users, "companies": companies, "permissions": perms, "model": llm.model,
                 "today": settings.today.isoformat(), "recovered_on_start": recovered,
                 "allow_foreign_buyer": settings.allow_foreign_buyer, "allow_test_samples": settings.allow_test_samples,
-                "ocr": recognizer is not None}
+                "file_import": settings.file_import, "ocr": recognizer is not None}
 
     @app.post("/api/sessions")
     def new_session(body: NewSession):
@@ -149,6 +154,7 @@ def create_app(settings) -> FastAPI:
     def send(sid: str, body: Message):
         parsed = []
         if body.files:
+            need_file_import()
             viewer(sid)  # 上传至少要能查看当前企业；导入另需修改权限，由导入工具把关
             if len(body.files) > 10:
                 raise HTTPException(400, "一条消息最多附带 10 个文件")
@@ -198,6 +204,7 @@ def create_app(settings) -> FastAPI:
     @app.post("/api/invoice-files")
     def upload_invoices(body: InvoiceUpload):
         """预览（commit=false）或导入发票文件。解析与校验全部由程序完成，不经模型。"""
+        need_file_import()
         c, user_id, company_id = viewer(body.session_id, need="write")
         if body.accept_buyer_mismatch and not settings.allow_foreign_buyer:
             raise HTTPException(403, "未开启 FH_ALLOW_FOREIGN_BUYER，不能导入购买方不是本企业的发票")

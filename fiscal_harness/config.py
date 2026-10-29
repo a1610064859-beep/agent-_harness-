@@ -38,6 +38,7 @@ class Settings:
     today: date
     allow_foreign_buyer: bool = False  # 导入时允许购买方不是本企业，仅测试外部样本用
     allow_test_samples: bool = False   # 导入时允许 invoicegen 生成的测试样张，仅测试用
+    file_import: bool = False          # 附加功能：导入发票文件与对话中上传（初赛范围外），FH_FILE_IMPORT=1 开启
     ocr: str = ""                      # 扫描件/图片识别：mineru 开启，默认关闭
     mineru_bin: str = "mineru"         # MinerU 命令行路径（scripts/setup-ocr.bat 会写进 .env）
     ocr_tier: str | None = None        # MinerU 档位：basic / standard / advanced，不填由 MinerU 决定
@@ -66,6 +67,7 @@ def load_settings() -> Settings:
         today=date.fromisoformat(today) if today else date.today(),
         allow_foreign_buyer=os.environ.get("FH_ALLOW_FOREIGN_BUYER") == "1",
         allow_test_samples=os.environ.get("FH_ALLOW_TEST_SAMPLES") == "1",
+        file_import=os.environ.get("FH_FILE_IMPORT") == "1",
         ocr=os.environ.get("FH_OCR", "").strip().lower(),
         mineru_bin=os.environ.get("FH_MINERU_BIN", "mineru"),
         ocr_tier=os.environ.get("FH_OCR_TIER") or None,

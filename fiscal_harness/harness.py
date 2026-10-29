@@ -53,6 +53,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     """attachments：随这条消息上传、已由程序解析校验的发票（invoice_files.ParsedInvoice），暂存待用户要求导入。"""
     scope = session_scope(conn, session_id, settings.today)
     scope.run_id = "R-" + uuid.uuid4().hex[:12]
+    if attachments and not settings.file_import:
+        raise ValueError("未开启发票文件导入（FH_FILE_IMPORT=1），不能随消息附带文件")
     if attachments:
         user_message += tools.ATTACH_MARK + "、".join(a.file_name for a in attachments)
     log = RunLog(conn, scope.run_id, session_id, scope.user_id, scope.company_id, user_message, llm.model)
@@ -64,7 +66,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
         log.step("uploads", {"staged": dict(zip(staged, (a.file_name for a in attachments)))})
     box = tools.Toolbox(conn, scope)
 
-    system, selected = context.build_system(conn, scope, settings.variant)
+    system, selected = context.build_system(conn, scope, settings.variant, settings.file_import)
     messages = [{"role": "system", "content": system}] + context.history(conn, scope, settings.history_chars)
     usage_total: dict[str, int] = {}
     calls: list[dict] = []
@@ -73,7 +75,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     first_reply = None            # 引用核对前的回复：重答没能完成时仍用它
     try:
         for step in range(settings.max_steps):
-            specs = tools.tool_specs(settings.variant)
+            specs = tools.tool_specs(settings.variant, settings.file_import)
             log.step("llm_input", {"messages": messages, "tools": [t["function"]["name"] for t in specs]})
             out = llm.chat(messages, specs)
             for k, v in out.usage.items():
@@ -101,7 +103,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                     result = {"ok": False, "error": {"code": "SKIPPED_AFTER_SWITCH", "message":
                               f"本批次已从 {switched_from} 切换到 {scope.company_id}，此调用未执行。请按新企业重新决定是否需要。"}}
                 else:
-                    result = tools.dispatch(box, name, args, settings.variant)
+                    result = tools.dispatch(box, name, args, settings.variant, settings.file_import)
                     if name == "switch_company" and scope.company_id != company_before:
                         switched_from = company_before
                 calls.append({"tool": name, "args": args, "ok": result["ok"],
@@ -115,7 +117,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                 # 切换后重建系统输入与对话历史，旧企业的规则、记忆和本轮此前的查询结果不再带入
                 conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'",
                              (scope.company_id, scope.run_id))
-                system, new_selected = context.build_system(conn, scope, settings.variant)
+                system, new_selected = context.build_system(conn, scope, settings.variant, settings.file_import)
                 if progress:
                     # 用户本轮要求的跨企业步骤：之前企业的结果由程序原样带入，只用于本轮回复，不能用于当前企业的操作
                     system += ("\n\n## 本轮已完成的步骤（程序记录，按企业标注）\n" + "\n".join(progress)

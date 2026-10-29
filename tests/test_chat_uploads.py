@@ -15,6 +15,13 @@ from .conftest import TODAY, say
 from .test_invoice_files import KV
 from .test_ocr import OCR_DIGITAL, fake, png
 
+
+@pytest.fixture
+def settings(settings):
+    """发票文件导入是附加功能，默认关闭；这些测试打开它。"""
+    return dataclasses.replace(settings, file_import=True)
+
+
 DIGITAL_ID = "26312000000000000001"
 KV_ID = "012345678901-12345678"
 
@@ -244,7 +251,7 @@ def test_end_to_end_turns_with_scripted_model(conn, settings):
         {"content": "已导入。"}])
     harness.run_turn(conn, llm, settings, sid, "号码日期都对")
     assert "已请用户核对票面，等用户确认" in llm.calls[0][0]["content"] and stored(conn, DIGITAL_ID) == 1
-    assert "import_uploaded_invoices" in {t["function"]["name"] for t in tool_specs("model_rules")}
+    assert "import_uploaded_invoices" in {t["function"]["name"] for t in tool_specs("model_rules", file_import=True)}
 
 
 # ---------- 网页：消息可附带文件 ----------

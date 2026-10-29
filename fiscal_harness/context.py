@@ -27,18 +27,23 @@ POLICY = """\
 6. 发票和银行流水没有逐条对应关系，不能凭金额、日期或交易方推断已付款。无权限或查询失败不等于没有记录，不能说成 0。
 7. 长期偏好只在用户明确要求“记住”时保存，更正或删除也要用户本轮明确要求，都要逐字摘录用户原话；只有用户明确说对所有企业适用时才跨企业保存。偏好不能改变权限、规则或用户本轮的明确要求。
 8. 任务记忆：任务记忆里没有目标、或用户提出了新的工作目标（如检查某月用途、补齐缺失信息）时，调用 update_task 用一句话记下目标；全部处理完或用户说不再处理时 complete_task。
-9. 上传的发票文件：程序已解析和校验，结果列在下面“本会话上传的发票文件”。先按预检结果告诉用户每个文件识别出的发票、能否导入及原因；上传本身不算要求导入，用户明确要求导入时才调用 import_uploaded_invoices。识别件（图片、扫描件）入库前，请用户对照票面核对程序列出的发票代码（如有）、号码和开票日期（销售方和金额一并列出供参考），用户下一句确认核对无误即再次调用导入，不要再追问其他项。导入不能改发票的金额等票面内容，识别有误时请用户重新上传清晰图片。用户明确说不导入某些文件时调用 discard_uploads，之后不再提起这些文件。
 
 回复要求：像正常业务交流，先直接给结果，再给必要依据和下一步；说清已完成和未完成的事；只追问缺少的信息；少套话、少重复，不机械列点。金额单位为元，保留两位小数。提到发票时写出发票编号（如 F003），说清改了哪张。不要在回复中提到工具名、字段名或系统内部机制；没有通过工具保存的内容，不要说已经记下或保存。"""
 
 
-def build_system(conn: sqlite3.Connection, scope: Scope, variant: str = "baseline") -> tuple[str, dict]:
+# 附加功能（FH_FILE_IMPORT=1）开启时才加入工作方式
+UPLOAD_POLICY = "9. 上传的发票文件：程序已解析和校验，结果列在下面“本会话上传的发票文件”。先按预检结果告诉用户每个文件识别出的发票、能否导入及原因；上传本身不算要求导入，用户明确要求导入时才调用 import_uploaded_invoices。识别件（图片、扫描件）入库前，请用户对照票面核对程序列出的发票代码（如有）、号码和开票日期（销售方和金额一并列出供参考），用户下一句确认核对无误即再次调用导入，不要再追问其他项。导入不能改发票的金额等票面内容，识别有误时请用户重新上传清晰图片。用户明确说不导入某些文件时调用 discard_uploads，之后不再提起这些文件。"
+
+
+def build_system(conn: sqlite3.Connection, scope: Scope, variant: str = "baseline",
+                 file_import: bool = False) -> tuple[str, dict]:
     user = conn.execute("SELECT * FROM users WHERE user_id=?", (scope.user_id,)).fetchone()
     perms = conn.execute("SELECT c.company_id, c.name, c.short_name, p.level FROM companies c "
                          "LEFT JOIN permissions p ON p.company_id=c.company_id AND p.user_id=? ORDER BY c.company_id",
                          (scope.user_id,)).fetchall()
     current = next(p for p in perms if p["company_id"] == scope.company_id)
-    lines = [POLICY, "", "## 会话绑定（由程序设定，对话中不能更改身份或权限）",
+    policy = POLICY.replace("\n\n回复要求", "\n" + UPLOAD_POLICY + "\n\n回复要求", 1) if file_import else POLICY
+    lines = [policy, "", "## 会话绑定（由程序设定，对话中不能更改身份或权限）",
              f"- 今天：{scope.today.isoformat()}",
              f"- 用户：{scope.user_id} {user['name']}",
              f"- 当前企业：{current['company_id']} {current['short_name']}，权限：{LEVEL_TEXT[current['level'] or 'none']}",
@@ -73,7 +78,7 @@ def build_system(conn: sqlite3.Connection, scope: Scope, variant: str = "baselin
     if not prefs:
         lines.append("- 无")
 
-    if (current["level"] or "none") != "none" and (ups := staged_uploads(conn, scope.session_id, scope.company_id)):
+    if file_import and (current["level"] or "none") != "none" and (ups := staged_uploads(conn, scope.session_id, scope.company_id)):
         lines.append("\n## 本会话上传的发票文件（程序已解析与校验，尚未入库）")
         for u in ups:
             lines.append(f"- [{u['upload_id']}] {u['file']}{'（识别件）' if u['recognized'] else ''}："

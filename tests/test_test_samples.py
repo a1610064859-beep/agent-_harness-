@@ -17,6 +17,13 @@ from invoicegen.models import Party
 
 from .test_invoice_files import KV
 
+
+@pytest.fixture
+def settings(settings):
+    """发票文件导入是附加功能，默认关闭；这些测试打开它。"""
+    return dataclasses.replace(settings, file_import=True)
+
+
 BUYER = Party(name="甲企业（比赛模拟）", tax_id="TEST0000000000C001")
 
 
@@ -108,6 +115,7 @@ def test_web_requires_env_to_allow_test_samples(settings, tmp_path, monkeypatch)
 def test_cli_generates_for_company_and_gates_import(settings, tmp_path, monkeypatch):
     importer.reset_and_import(db.connect(tmp_path / "h.db"), settings.sample_xlsx, settings.rules_docx)
     monkeypatch.setenv("FH_DB", str(tmp_path / "h.db"))
+    monkeypatch.setenv("FH_FILE_IMPORT", "1")
     monkeypatch.delenv("FH_ALLOW_TEST_SAMPLES", raising=False)
     out = tmp_path / "gen"
     cli.main(["data", "gen-test-invoices", "--company", "C002", "--month", "2026-08", "-n", "3", "--seed", "5",

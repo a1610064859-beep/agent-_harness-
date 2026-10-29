@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 import time
@@ -31,6 +32,8 @@ class Ctx:
 
 
 def run_case(case: Case, settings, llm, attempt: int) -> dict:
+    if any(t.attach for t in case.turns):  # 对话上传是附加功能，只在这些案例里开启
+        settings = dataclasses.replace(settings, file_import=True)
     conn = db.connect(":memory:")
     importer.reset_and_import(conn, settings.sample_xlsx, settings.rules_docx)
     sid, user, company = None, case.user, case.company

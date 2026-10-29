@@ -50,8 +50,9 @@ def cmd_init(args, s):
 
 # ---------- 对话 ----------
 
-HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 新会话  /run 查看上一轮运行记录  /memory 查看记忆
-      /attach 发票文件或目录  随下一句话附带发票（PDF、OFD、图片；程序解析校验，说“导入”才入库）  /quit 退出"""
+HELP = """命令：/company C002 切换企业（同 /user 需新会话）  /new 新会话  /run 查看上一轮运行记录  /memory 查看记忆  /quit 退出"""
+HELP_ATTACH = "      /attach 发票文件或目录  随下一句话附带发票（PDF、OFD、图片；程序解析校验，说“导入”才入库）"
+FILE_IMPORT_OFF = "发票文件导入是附加功能（初赛范围外），默认关闭；需要时设置环境变量 FH_FILE_IMPORT=1"
 
 
 def _drop_attached(attached: list) -> list:
@@ -65,7 +66,8 @@ def cmd_chat(args, s):
     conn = _conn(s, recover=True)
     llm = from_settings(s)
     sid = args.session or harness.start_session(conn, args.user, args.company)
-    print(f"会话 {sid}｜用户 {args.user}｜企业 {args.company}｜模型 {llm.model}\n{HELP}")
+    print(f"会话 {sid}｜用户 {args.user}｜企业 {args.company}｜模型 {llm.model}\n{HELP}"
+          + (f"\n{HELP_ATTACH}" if s.file_import else ""))
     last_run, attached = None, []
     recognizer = ocr.from_settings(s)
     while True:
@@ -109,6 +111,9 @@ def cmd_chat(args, s):
             _out(Toolbox(conn, scope).list_memories())
             continue
         if text.startswith("/attach"):
+            if not s.file_import:
+                print(FILE_IMPORT_OFF)
+                continue
             try:
                 files = invoice_files.collect(text.split()[1:])
                 if not files:
@@ -324,6 +329,8 @@ def _gen_test_invoices(conn, args, s):
 def cmd_data(args, s):
     conn = _conn(s)
     if args.action == "import-files":
+        if not s.file_import:
+            sys.exit(FILE_IMPORT_OFF)
         if not args.files:
             sys.exit("请给出发票文件或目录，如：data import-files --company C001 --files 发票/")
         if args.accept_buyer_mismatch and not s.allow_foreign_buyer:

@@ -995,8 +995,12 @@ MODEL_RULES_SPECS = [s for s in TOOL_SPECS if s["function"]["name"] not in ("che
     _fn("list_rule_documents", "返回与当前企业相关的全部规则文档（各版本原文与状态），由你自行判断适用哪一版。", {}, [])]
 
 
-def tool_specs(variant: str = "baseline") -> list[dict]:
-    return MODEL_RULES_SPECS if variant == "model_rules" else TOOL_SPECS
+UPLOAD_TOOLS = {"import_uploaded_invoices", "discard_uploads"}  # 附加功能，FH_FILE_IMPORT=1 时才提供
+
+
+def tool_specs(variant: str = "baseline", file_import: bool = False) -> list[dict]:
+    specs = MODEL_RULES_SPECS if variant == "model_rules" else TOOL_SPECS
+    return specs if file_import else [s for s in specs if s["function"]["name"] not in UPLOAD_TOOLS]
 
 
 TOOL_NAMES = {t["function"]["name"] for t in TOOL_SPECS + MODEL_RULES_SPECS}
@@ -1027,9 +1031,10 @@ def _check_args(spec: dict, args: dict) -> list[str]:
     return problems
 
 
-def dispatch(box: Toolbox, name: str, raw_args: str | dict, variant: str = "baseline") -> dict:
+def dispatch(box: Toolbox, name: str, raw_args: str | dict, variant: str = "baseline",
+             file_import: bool = False) -> dict:
     """执行一次工具调用，统一返回 {ok, data | error}。参数错误和守卫拒绝都作为结果交还模型。"""
-    specs = {s["function"]["name"]: s for s in tool_specs(variant)}
+    specs = {s["function"]["name"]: s for s in tool_specs(variant, file_import)}
     if name not in specs:
         return {"ok": False, "error": {"code": "UNKNOWN_TOOL", "message": f"没有工具 {name}"}}
     try:
