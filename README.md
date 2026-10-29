@@ -7,7 +7,7 @@ Harness 把模型、记忆、规则知识库和业务工具连在一起：**模�
 
 ## 比赛要求
 
-依据主办方材料包 v1.1.0（《01_参赛说明》《02_示例数据》《03_业务规则》）整理，只列影响实现的部分。完整对照见 [`docs/development-review-plan-v2.md`](docs/development-review-plan-v2.md) 第 0–1 节。
+依据主办方材料包 v1.1.0 整理，只列影响实现的部分。原件在 `data/source/`：《01_参赛说明》→ `contest_instructions_v1.1.0.docx`，《02_示例数据》→ `sample_data_v1.1.0.xlsx`，《03_业务规则》→ `business_rules_v1.1.0.docx`。完整对照见 [`docs/development-review-plan-v2.md`](docs/development-review-plan-v2.md) 第 0–1 节。
 
 **时间**：报名截止 11-12 00:00；初赛提交截止 11-13 00:00；复赛 11-16～11-22（加入长对话、未公开数据组合、规则变化与故障处理）。
 
