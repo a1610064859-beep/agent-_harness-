@@ -135,15 +135,15 @@ Windows：`scripts\gen-test-invoices.bat --company C001 --month 2026-09 -n 5`。
 
 ```bash
 python -m pytest -q                  # 281 项确定性测试，不调用模型，也不需要安装 MinerU（二维码相关的测试需要 zxingcpp，未安装时跳过）
-python -m evals.run --repeat 3       # 33 个多轮案例（含 5 个导入后的案例），真实模型
+python -m evals.run --repeat 3       # 38 个多轮案例（含 5 个导入后的案例、5 个对话上传案例），真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录
 ```
 
-最近一次结果（2026-10-27，deepseek-flash，修复 ec2d61e 复评问题之后重新运行）：
+最近一次结果（2026-10-28，deepseek-flash，对话中上传发票及其审查修复之后）：
 
-- 多轮评测：**87/87**（29 个案例 × 3 次，含 5 个导入案例；另有 7 条规则引用异常，不计入通过条件，见验收报告）
-- 对比实验：常规题两组都全对；条文冲突题中，模型自选有 5/10 次按已停用规则作答，程序解析 0 次
+- 多轮评测：**114/114**（38 个案例 × 3 次，含 5 个导入案例和 5 个对话上传案例；规则引用异常 0 条）
+- 对比实验：常规题两组都全对；条文冲突题中，模型自选有 4/5 次按已停用规则作答，程序解析 0 次
 
 详见 [docs/acceptance/report.md](docs/acceptance/report.md)。演示步骤见 [docs/demo-script.md](docs/demo-script.md)。
 

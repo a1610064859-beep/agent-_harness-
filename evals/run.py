@@ -20,6 +20,7 @@ from fiscal_harness.llm import from_settings
 
 from .cases import CASES, Case
 from .imports import import_samples
+from .uploads import build as build_uploads
 
 
 @dataclass
@@ -47,13 +48,14 @@ def run_case(case: Case, settings, llm, attempt: int) -> dict:
                 sid = harness.start_session(conn, user, company)
                 if case.imports and len(replies) == 0:
                     import_samples(conn, sid, company, case.imports)
-            r = harness.run_turn(conn, llm, settings, sid, t.text)
+            r = harness.run_turn(conn, llm, settings, sid, t.text, attachments=build_uploads(t.attach) or None)
             u = runlog.load(conn, r.run_id)["usage"]
             for k in usage:
                 usage[k] += u.get(k, 0)
             results.append(r)
             replies.append(r.reply)
-            transcript.append({"session": sid, "user": user, "text": t.text, "reply": r.reply, "run_id": r.run_id,
+            transcript.append({"session": sid, "user": user, "text": t.text, "attach": list(t.attach),
+                               "reply": r.reply, "run_id": r.run_id,
                                "status": r.status, "tools": r.tool_calls, "anomalies": r.anomalies})
         ctx = Ctx(conn, results, replies)
         checks = [c(ctx) for c in case.checks]

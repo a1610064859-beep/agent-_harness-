@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .uploads import KV_ID, SCAN_ID
+
 
 @dataclass
 class Turn:
@@ -16,6 +18,7 @@ class Turn:
     new_session: bool = False
     user: str | None = None
     company: str | None = None
+    attach: tuple = ()  # 随这句话上传的发票（evals/uploads.py 的 ATTACHMENTS 键）
 
 
 @dataclass
@@ -98,6 +101,21 @@ def prefs(user, company, pred, desc):
             "SELECT content FROM memories WHERE user_id=? AND status='active' AND (company_id=? OR company_id IS NULL)",
             (user, company))]
         return pred(rows), f"{user}/{company} 的偏好应{desc}，实际 {rows}"
+    return check
+
+
+def stored(company, inv, expected: bool):
+    def check(ctx):
+        n = ctx.conn.execute("SELECT COUNT(*) FROM invoices WHERE company_id=? AND invoice_id=?",
+                             (company, inv)).fetchone()[0]
+        return bool(n) == expected, f"{company}/{inv} {'应已' if expected else '不应'}入库，实际 {n} 张"
+    return check
+
+
+def uploads_staged(n):
+    def check(ctx):
+        got = ctx.conn.execute("SELECT COUNT(*) FROM uploads WHERE status='staged'").fetchone()[0]
+        return got == n, f"待处理的上传文件应为 {n} 个，实际 {got}"
     return check
 
 
@@ -211,6 +229,22 @@ CASES = [
          [S("9月哪些发票必须填用途但还没填？")],
          [reply_has(0, "F002", "F005", "F006", "TEST20260925000002"), tool_ok(0, "check_purpose")],
          imports=("A", "B")),
+    # ---- 对话中上传发票（kv：旧版普票文字层 113.00；scan：数电票识别件 1691.23；购买方均为甲企业） ----
+    Case("U1", "上传", "上传后只问不导入", "U001", "C001",
+         [S("看看这张发票是哪家开的，多少钱", attach=("kv",))],
+         [stored("C001", KV_ID, False), reply_has(0, "测试服务有限公司", "113"), uploads_staged(1)]),
+    Case("U2", "上传", "明确要求导入的文字层发票直接入库", "U001", "C001",
+         [S("把这张发票导入", attach=("kv",))],
+         [stored("C001", KV_ID, True), tool_ok(0, "import_uploaded_invoices")]),
+    Case("U3", "上传", "识别件先列字段请核对，下一句确认后入库", "U001", "C001",
+         [S("能不能帮我把这张导入", attach=("scan",)), S("核对过了，号码和日期都没有错误")],
+         [reply_has(0, SCAN_ID), stored("C001", SCAN_ID, True), tool_ok(1, "import_uploaded_invoices")]),
+    Case("U4", "上传", "识别件只再说一遍导入不算核对", "U001", "C001",
+         [S("导入这张发票", attach=("scan",)), S("导入吧")],
+         [stored("C001", SCAN_ID, False)]),
+    Case("U5", "上传", "用户说不导入后不再列出", "U001", "C001",
+         [S("看看这张", attach=("kv",)), S("这张不导入了")],
+         [tool_ok(1, "discard_uploads"), uploads_staged(0), stored("C001", KV_ID, False)]),
     # ---- 2026-10-28 扩展测试的复现场景 ----
     Case("W1", "保存", "“分别保存”两张都写入", "U001", "C001",
          [S("9月F002用途填打印纸，F003用途填寄送合同快递，请分别保存。")],
