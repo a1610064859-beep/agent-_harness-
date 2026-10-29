@@ -1,0 +1,123 @@
+{
+ "model": "deepseek-flash",
+ "repeat": 5,
+ "question": "9月有哪些发票按规则必须填用途但还没填？回答最后单独一行用“缺用途：编号,编号”列出（没有就写“缺用途：无”）。",
+ "variants": {
+  "baseline": {
+   "exact": "34/35",
+   "acceptable": "35/35",
+   "outcomes": {
+    "X1": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X2": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X3": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X4": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X5": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X6": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X7": {
+     "exact": 4,
+     "flagged": 1,
+     "wrong": 0
+    }
+   },
+   "by_case": {
+    "X1": "5/5",
+    "X2": "5/5",
+    "X3": "5/5",
+    "X4": "5/5",
+    "X5": "5/5",
+    "X6": "5/5",
+    "X7": "4/5"
+   },
+   "unparsed": 0,
+   "false_positive_items": 0,
+   "false_negative_items": 1,
+   "avg_tool_calls": 2.37,
+   "avg_prompt_tokens": 8595,
+   "avg_completion_tokens": 636,
+   "avg_seconds": 5.71,
+   "avg_cost_yuan": null
+  },
+  "model_rules": {
+   "exact": "31/35",
+   "acceptable": "33/35",
+   "outcomes": {
+    "X1": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X2": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X3": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X4": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X5": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X6": {
+     "exact": 5,
+     "flagged": 0,
+     "wrong": 0
+    },
+    "X7": {
+     "exact": 1,
+     "flagged": 2,
+     "wrong": 2
+    }
+   },
+   "by_case": {
+    "X1": "5/5",
+    "X2": "5/5",
+    "X3": "5/5",
+    "X4": "5/5",
+    "X5": "5/5",
+    "X6": "5/5",
+    "X7": "1/5"
+   },
+   "unparsed": 0,
+   "false_positive_items": 8,
+   "false_negative_items": 2,
+   "avg_tool_calls": 2.83,
+   "avg_prompt_tokens": 9378,
+   "avg_completion_tokens": 1020,
+   "avg_seconds": 8.17,
+   "avg_cost_yuan": null
+  }
+ }
+}

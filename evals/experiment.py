@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -75,7 +77,9 @@ def run_one(exp, variant: str, attempt: int, settings, llm) -> dict:
     if setup:
         setup(conn)
     sid = harness.start_session(conn, "U001", company)
+    started = time.monotonic()
     r = harness.run_turn(conn, llm, s, sid, ASK)
+    seconds = round(time.monotonic() - started, 2)
     got = parse(r.reply)
     usage = runlog.load(conn, r.run_id)["usage"]
     flagged = (not got) and bool(re.search(r"无法|待确认|不能确定|无法确定|冲突", r.reply.splitlines()[-1] if r.reply else ""))
@@ -85,7 +89,17 @@ def run_one(exp, variant: str, attempt: int, settings, llm) -> dict:
             "false_positive": sorted(got - gold) if got is not None else None,
             "false_negative": sorted(gold - got) if got is not None else None,
             "tool_calls": len(r.tool_calls), "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0), "reply": r.reply}
+            "completion_tokens": usage.get("completion_tokens", 0), "seconds": seconds, "reply": r.reply}
+
+
+def _cost(rows) -> float | None:
+    """按 FH_PRICE_IN / FH_PRICE_OUT（元/百万 tokens，取自所用平台的价目）估算每次平均费用；没设置就不估。"""
+    try:
+        price_in, price_out = float(os.environ["FH_PRICE_IN"]), float(os.environ["FH_PRICE_OUT"])
+    except (KeyError, ValueError):
+        return None
+    total = sum(r["prompt_tokens"] * price_in + r["completion_tokens"] * price_out for r in rows) / 1e6
+    return round(total / len(rows), 5)
 
 
 def main(argv=None):
@@ -116,6 +130,10 @@ def main(argv=None):
             "false_negative_items": sum(len(r["false_negative"] or []) for r in vs),
             "avg_tool_calls": round(sum(r["tool_calls"] for r in vs) / len(vs), 2),
             "avg_prompt_tokens": round(sum(r["prompt_tokens"] for r in vs) / len(vs)),
+            "avg_completion_tokens": round(sum(r["completion_tokens"] for r in vs) / len(vs)),
+            # 单轮从提问到回复的墙钟时间；并发运行，含排队与网络波动，只宜在同一次实验内比较
+            "avg_seconds": round(sum(r["seconds"] for r in vs) / len(vs), 2),
+            "avg_cost_yuan": _cost(vs),
         }
     (out / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     (out / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
