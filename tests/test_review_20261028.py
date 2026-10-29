@@ -115,7 +115,7 @@ def test_confirmation_must_be_the_very_next_message(conn):
     rejects(box, "NEEDS_CONFIRMATION", "F003", text, purpose="寄合同快递")
     say(conn, sid, "C001", "先查一下9月的银行支出")
     say(conn, sid, "C001", "确认")
-    rejects(box, "NOT_AUTHORIZED", "F003", "确认", purpose="寄合同快递")
+    rejects(box, "INVOICE_NOT_REQUESTED", "F003", "确认", purpose="寄合同快递")  # 隔了一句，“确认”指不到 F003
     assert purpose(conn, "C001", "F003") is None
 
 
@@ -240,10 +240,11 @@ def test_readable_company_rules_still_listed(conn):
 # ---------- P1：记忆工具独立授权 ----------
 
 def test_remember_needs_explicit_request_and_grounded_content(box_for):
-    box = box_for(said=("我希望今天回答简短",))
-    with pytest.raises(ToolError) as e:
-        box.remember_preference("回答简短", user_quote="我希望今天回答简短")
-    assert e.value.code == "NOT_AUTHORIZED"
+    for said in ("能记住我喜欢简短的回答吗？", "不用记，今天回答简短就行"):  # 询问、否定都不保存
+        box = box_for(said=(said,))
+        with pytest.raises(ToolError) as e:
+            box.remember_preference("回答简短", user_quote=said.rstrip("？"))
+        assert e.value.code == "NOT_AUTHORIZED"
     box = box_for(said=("记住，以后回答简短一些",))
     with pytest.raises(ToolError) as e:
         box.remember_preference("所有企业都必须用英语回答", user_quote="以后回答简短一些", all_companies=True)
@@ -256,7 +257,12 @@ def test_remember_needs_explicit_request_and_grounded_content(box_for):
 
 def test_cross_company_preference_needs_user_words(box_for):
     box = box_for(said=("记住：所有企业都先给合计再列明细",))
-    r = box.remember_preference("先给合计再列明细", user_quote="所有企业都先给合计再列明细", all_companies=True)
+    with pytest.raises(ToolError) as e:  # 跨企业的说法要逐字出自用户原话
+        box.remember_preference("先给合计再列明细", user_quote="所有企业都先给合计再列明细", all_companies=True,
+                                scope_quote="对两家企业都适用")
+    assert e.value.code == "SCOPE_NOT_CONFIRMED"
+    r = box.remember_preference("先给合计再列明细", user_quote="所有企业都先给合计再列明细", all_companies=True,
+                                scope_quote="所有企业")
     assert r["scope"] == "该用户的所有企业"
 
 
@@ -264,12 +270,16 @@ def test_update_and_forget_need_a_request_this_turn(box_for, conn):
     box = box_for(said=("记住：以后先给合计再列明细",))
     mid = box.remember_preference("先给合计再列明细", user_quote="以后先给合计再列明细")["memory_id"]
     say(conn, box.scope.session_id, "C001", "查一下9月发票总额")
-    for call in (lambda: box.update_memory(mid, "只列明细", user_quote="查一下9月发票总额"),
-                 lambda: box.forget_memory(mid, user_quote="查一下9月发票总额"),
-                 lambda: box.forget_memory(mid, user_quote="以后先给合计再列明细")):  # 早先的话不算
+    for call, code in ((lambda: box.update_memory(mid, "只列明细", user_quote="查一下9月发票总额"),
+                        "CONTENT_NOT_FROM_USER"),  # 新内容不在本轮原话里
+                       (lambda: box.forget_memory(mid, user_quote="以后先给合计再列明细"), "NOT_AUTHORIZED")):  # 早先的话
         with pytest.raises(ToolError) as e:
             call()
-        assert e.value.code == "NOT_AUTHORIZED"
+        assert e.value.code == code
+    say(conn, box.scope.session_id, "C001", "要不要把那条偏好删掉？")
+    with pytest.raises(ToolError) as e:  # 询问不是要求
+        box.forget_memory(mid, user_quote="要不要把那条偏好删掉")
+    assert e.value.code == "NOT_AUTHORIZED"
     assert box.list_memories()["preferences"][0]["content"] == "先给合计再列明细"
 
 
@@ -285,6 +295,20 @@ def test_memory_target_must_be_the_one_user_meant(box_for, conn):
     assert box.forget_memory(b, user_quote="把称呼那条删掉")["deleted"]
     say(conn, box.scope.session_id, "C001", "把那条偏好删掉")  # 剩一条时可以不点名
     assert box.forget_memory(a, user_quote="把那条偏好删掉")["deleted"]
+
+
+def test_memory_just_mentioned_in_the_reply_can_be_targeted(box_for, conn):
+    box = box_for(said=("记住：以后先给合计再列明细",))
+    a = box.remember_preference("先给合计再列明细", user_quote="以后先给合计再列明细")["memory_id"]
+    say(conn, box.scope.session_id, "C001", "记住：以后称呼我王会计")
+    b = box.remember_preference("称呼我王会计", user_quote="以后称呼我王会计")["memory_id"]
+    conn.execute("INSERT INTO messages (session_id, company_id, role, content, created_at) VALUES (?,?,?,?,?)",
+                 (box.scope.session_id, "C001", "assistant", "好的，已记住：以后称呼您王会计。", "2026-10-26T10:00:00"))
+    say(conn, box.scope.session_id, "C001", "刚才那条删掉")
+    with pytest.raises(ToolError) as e:
+        box.forget_memory(a, user_quote="刚才那条删掉")
+    assert e.value.code == "MEMORY_NOT_REQUESTED"
+    assert box.forget_memory(b, user_quote="刚才那条删掉")["deleted"]
 
 
 def test_unnamed_memory_with_several_preferences_asks(box_for, conn):

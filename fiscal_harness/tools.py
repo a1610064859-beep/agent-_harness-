@@ -242,7 +242,7 @@ class Toolbox:
             raise ToolError("NOT_AUTHORIZED", "用户在这句原话里表示暂不保存或不要修改，不能据此修改。请等用户明确要求保存。")
         if not self._points_at_invoice(src):
             return self._authorize_confirmation(src, msgs, invoice_id, changes, found)
-        problems = found + ([] if intent.ACTION.search(_norm(src["content"])) else ["no_action"])
+        problems = list(found)
         if self._bind(src, invoice_id, changes):
             problems.append("ambiguous")
         row = self._target_invoice(invoice_id, [src])
@@ -256,10 +256,11 @@ class Toolbox:
 
     def _authorize_confirmation(self, src: sqlite3.Row, msgs: list[sqlite3.Row], invoice_id: str, changes: dict,
                                 found: list[str]) -> int:
-        """没点名发票的原话（如“确认”“可以了，保存吧”）：只能确认上一轮程序记下的修改，或之前点名过的发票。"""
-        text = _norm(src["content"])
-        if found or not (intent.SAVE.search(text) or intent.AFFIRM.search(text)):
-            raise ToolError("NOT_AUTHORIZED", "这句原话没有明确确认修改，不能据此写入。请向用户确认。")
+        """没点名发票的原话（如“确认”“可以了，保存吧”）：是不是确认由模型理解，程序只核对它确认的对象——
+        上一句之后程序记下的待确认修改，或紧挨着的上一句用户原话里点名的发票。"""
+        if found:
+            raise ToolError("NOT_AUTHORIZED", f"这句原话{'、'.join(intent.RISK_TEXT[x] for x in found)}，"
+                                              "不能据此写入。请向用户确认。")
         prev = self.conn.execute("SELECT MAX(id) FROM messages WHERE session_id=? AND role='user' AND id<?",
                                  (self.scope.session_id, src["id"])).fetchone()[0]
         proposals = self.conn.execute(
@@ -273,14 +274,12 @@ class Toolbox:
             raise ToolError("CHANGE_NOT_CONFIRMED", "用户确认的是上一轮列出的修改，不包括这一项。请按列出的内容修改，"
                                                     "或向用户重新确认。",
                             pending_changes=[_proposal_view(p) for p in proposals])
-        # 没有待确认修改：对象取自之前最近一条点名了发票的原话（如“先别保存”之后的“可以了，保存吧”）
-        if not intent.SAVE.search(text):
-            raise ToolError("NOT_AUTHORIZED", "这句原话没有明确要求保存，不能据此写入。请向用户确认。")
-        earlier = [m for m in msgs if m["id"] < src["id"] and self._points_at_invoice(m)]
-        if not earlier:
-            raise ToolError("INVOICE_NOT_REQUESTED", f"用户原话没有点名要修改的发票，不能修改 {invoice_id}。请向用户确认。",
-                            named_invoices=[])
-        prior = earlier[-1]
+        # 没有待确认修改：对象取自紧挨着的上一句用户原话（如“F002填打印纸，先别保存”之后的“可以了，保存吧”）；
+        # 隔了别的话、切换过企业或上一句没点名发票，都要向用户确认
+        prior = next((m for m in msgs if m["id"] == prev), None)
+        if prior is None or not self._points_at_invoice(prior):
+            raise ToolError("INVOICE_NOT_REQUESTED", f"用户这句话没有点名发票，上一句也没有，不能修改 {invoice_id}。"
+                                                     "请向用户确认要改哪张发票。", named_invoices=[])
         if "example" in intent.risks(prior["content"]):
             raise ToolError("NOT_AUTHORIZED", "用户之前那句只是举例或假设，不能当作修改要求。请向用户确认。")
         ambiguous = self._bind(prior, invoice_id, changes, also=src)
@@ -617,16 +616,18 @@ class Toolbox:
 
     # ---------- 长期偏好 ----------
 
-    def _memory_request(self, user_quote: str, marker, what: str) -> sqlite3.Row:
-        """记忆的新增、更正、删除都要有本轮用户明确的话，且这句话表达了对应的要求。"""
+    def _memory_request(self, user_quote: str, what: str) -> sqlite3.Row:
+        """记忆的新增、更正、删除：是不是这个要求由模型理解；程序核对 user_quote 出自用户本轮原话，
+        且原话没有否定、条件、不确定、举例或询问。"""
         quote = _norm(user_quote)
         latest = self._scope_user_messages()[-1:]  # 只认本轮用户原话，不能拿早先的话补授权
         if not quote or not latest or quote not in _norm(latest[0]["content"]):
             raise ToolError("NOT_AUTHORIZED", f"只有用户在本轮明确要求{what}时才能操作长期偏好，"
                                               "user_quote 须逐字摘自用户本轮原话。")
         src = latest[0]
-        if not marker.search(_norm(src["content"])):
-            raise ToolError("NOT_AUTHORIZED", f"用户这句话没有要求{what}，不能操作长期偏好。")
+        if found := intent.risks(src["content"]):
+            raise ToolError("NOT_AUTHORIZED", f"用户这句话{'、'.join(intent.RISK_TEXT[x] for x in found)}，"
+                                              f"没有{what}。请向用户确认。")
         return src
 
     def _grounded(self, content: str, src: sqlite3.Row) -> str:
@@ -636,28 +637,31 @@ class Toolbox:
         return content
 
     def _target_memory(self, memory_id: str, src: sqlite3.Row) -> sqlite3.Row:
-        """要操作的记忆须是用户点到的那条：说了编号，或原话与这条的内容重合最多（如“称呼那条”）；
-        当前只有一条偏好时可省略。"""
+        """要操作的记忆须能从对话里指认：用户说了编号，原话与这条的内容重合最多（如“称呼那条”），
+        或上一轮回复里只说到了这一条；当前只有一条偏好时可省略。"""
         prefs = memory.preferences(self.conn, self.scope.user_id, self.scope.company_id)
         row = next((p for p in prefs if p["memory_id"] == memory_id), None)
         if row is None:
             raise ToolError("NOT_FOUND", f"当前用户和企业下没有记忆 {memory_id}。")
         score = {p["memory_id"]: intent.coverage(p["content"], src["content"], _norm) for p in prefs}
-        latest = sorted(prefs, key=lambda p: p["updated_at"])[-1]["memory_id"]  # 同一秒内的按保存先后
+        reply = self.conn.execute("SELECT content FROM messages WHERE session_id=? AND role='assistant' AND id<? "
+                                  "ORDER BY id DESC LIMIT 1", (self.scope.session_id, src["id"])).fetchone()
         named = (memory_id.upper() in _norm(src["content"]).upper()
                  or (score[memory_id] > 0 and all(v < score[memory_id] for k, v in score.items() if k != memory_id))
-                 or (intent.RECENT.search(_norm(src["content"])) and memory_id == latest))
+                 # “刚才那条”“这条”：上一轮回复里刚说到的那条（刚保存、更正或列出过）
+                 or (reply is not None and intent.coverage(row["content"], reply["content"], _norm) >= 0.6
+                     and sum(intent.coverage(p["content"], reply["content"], _norm) >= 0.6 for p in prefs) == 1))
         if not named and len(prefs) != 1:
             raise ToolError("MEMORY_NOT_REQUESTED", f"用户这句话没有指明要操作 {memory_id}（{row['content']}）。"
                                                     "请向用户确认是哪一条。", preferences=[_pref_view(p) for p in prefs])
         return row
 
-    def remember_preference(self, content: str, user_quote: str, all_companies: bool = False) -> dict:
-        src = self._memory_request(user_quote, intent.REMEMBER, "记住")
-        if intent.DELETE.search(_norm(src["content"])):
-            raise ToolError("NOT_AUTHORIZED", "用户这句话是要求不记或删除，不能保存为长期偏好。")
-        if all_companies and not intent.ALL_COMPANIES.search(_norm(src["content"])):
-            raise ToolError("SCOPE_NOT_CONFIRMED", "用户没有说这条偏好对所有企业都适用，只能保存到当前企业。")
+    def remember_preference(self, content: str, user_quote: str, all_companies: bool = False,
+                            scope_quote: str | None = None) -> dict:
+        src = self._memory_request(user_quote, "记住")
+        if all_companies and not (scope_quote and _norm(scope_quote) in _norm(src["content"])):
+            raise ToolError("SCOPE_NOT_CONFIRMED", "跨企业保存须在 scope_quote 中逐字摘录用户本轮说明对所有企业适用的原话；"
+                                                   "用户没说时只能保存到当前企业。")
         mid = memory.add_preference(self.conn, self.scope.user_id, None if all_companies else self.scope.company_id,
                                     self._grounded(content, src))
         return {"memory_id": mid, "scope": "该用户的所有企业" if all_companies else f"仅 {self.scope.company_id}"}
@@ -668,14 +672,14 @@ class Toolbox:
         return {"preferences": [_pref_view(p) for p in prefs], "open_task": _task_view(self.conn, task) if task else None}
 
     def update_memory(self, memory_id: str, content: str, user_quote: str) -> dict:
-        src = self._memory_request(user_quote, intent.EDIT, "更正偏好")
+        src = self._memory_request(user_quote, "更正偏好")
         self._target_memory(memory_id, src)
         content = self._grounded(content, src)
         memory.update_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id, content)
         return {"memory_id": memory_id, "content": content}
 
     def forget_memory(self, memory_id: str, user_quote: str) -> dict:
-        src = self._memory_request(user_quote, intent.DELETE, "删除偏好")
+        src = self._memory_request(user_quote, "删除偏好")
         row = self._target_memory(memory_id, src)
         memory.delete_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id)
         _scrub_runs(self.conn, row["content"], f"[已删除的记忆 {memory_id}]")
@@ -683,9 +687,10 @@ class Toolbox:
 
     # ---------- 对话中上传的发票文件 ----------
 
-    def import_uploaded_invoices(self, upload_ids: list[str], user_quote: str) -> dict:
-        """导入本会话、当前企业下上传并经程序校验的发票。只认用户本轮原话；上传本身不算要求导入。
-        识别件（图片、扫描件）先列出代码、号码、日期和金额请用户对照票面核对，紧接着的下一句明确确认才入库。"""
+    def import_uploaded_invoices(self, upload_ids: list[str], user_quote: str, checked_by_user: bool = False) -> dict:
+        """导入本会话、当前企业下上传并经程序校验的发票。是否要求导入由模型理解，程序只认用户本轮原话；
+        识别件（图片、扫描件）先列出代码、号码、日期和金额请用户对照票面核对，用户紧接着的下一句确认核对过
+        （checked_by_user，由模型判断）且没有异议才入库。"""
         self._require("write")
         ids = list(dict.fromkeys(u.strip().upper() for u in upload_ids if u.strip()))
         if not ids:
@@ -709,21 +714,14 @@ class Toolbox:
         if found := intent.risks(text):
             raise ToolError("NOT_AUTHORIZED", f"用户原话{'、'.join(intent.RISK_TEXT[x] for x in found)}，没有导入。"
                                               "请等用户明确要求导入。")
-        if intent.asks(text):
-            raise ToolError("NOT_AUTHORIZED", "用户是在询问，不是要求导入，没有导入。先回答用户的问题，再请用户明确说要导入。")
-        t = _norm(text)
-        dissent = intent.dissents(t)
-        wanted = bool(intent.IMPORT.search(t)) and not dissent
-        confirms = not dissent and bool(intent.CHECKED.search(t))  # 再说一遍“导入”不等于核对过票面
+        if intent.dissents(text):
+            raise ToolError("NOT_AUTHORIZED", "用户对识别结果提出了异议，没有导入。请按用户的说法核实；识别有误时请用户"
+                                              "重新上传清晰的图片，或在导入页对照票面处理。")
         previous = earlier[-1]["id"] if earlier else None
         parsed = {u: invoice_files.from_json(rows[u]["parsed_json"]) for u in ids}
         recognized = [u for u in ids if parsed[u].layout == invoice_files.OCR_LAYOUT]
-        checked = [u for u in recognized if confirms and previous is not None
+        checked = [u for u in recognized if checked_by_user and previous is not None
                    and rows[u]["check_after_message_id"] == previous]
-        if not wanted and not checked:
-            raise ToolError("NOT_AUTHORIZED", "用户对识别结果提出了异议，没有导入。请按用户的说法核实；识别有误时请用户"
-                                              "重新上传清晰的图片，或在导入页对照票面处理。" if dissent else
-                            "用户这句话没有要求导入，也不是对上一轮列出的识别结果的确认，没有导入。")
         to_check = [u for u in recognized if u not in checked]
         go = [u for u in ids if u not in to_check]
         results = dict(zip(go, invoice_files.import_files(self.conn, cid, [parsed[u] for u in go], commit=True,
@@ -764,7 +762,7 @@ class Toolbox:
             raise ToolError("BAD_ARG", "至少提供一个 upload_id。")
         text = self._scope_user_messages()[-1]["content"]
         quote = _norm(user_quote)
-        if not quote or quote not in _norm(text) or not intent.DISCARD.search(_norm(text)):
+        if not quote or quote not in _norm(text):
             raise ToolError("NOT_AUTHORIZED", "只有用户本轮明确说不导入这些文件时才能放弃，user_quote 须逐字摘自用户本轮原话。")
         rows = {r["upload_id"]: r for r in self.conn.execute(
             f"SELECT * FROM uploads WHERE session_id=? AND company_id=? AND status='staged' "
@@ -967,7 +965,8 @@ TOOL_SPECS = [
         {"summary": {"type": "string"}, "abandon_pending": {"type": "boolean"}}, ["summary"]),
     _fn("remember_preference", "保存用户明确要求记住的长期偏好（如回答格式、称呼）。默认只对当前企业有效。",
         {"content": {"type": "string"}, "user_quote": {"type": "string", "description": "用户要求记住的原话"},
-         "all_companies": {"type": "boolean", "description": "仅当用户明确说对所有企业都适用时为 true"}},
+         "all_companies": {"type": "boolean", "description": "仅当用户明确说对所有企业都适用时为 true"},
+         "scope_quote": {"type": "string", "description": "all_companies 为 true 时必填：用户说明对所有企业适用的原话（逐字摘录）"}},
         ["content", "user_quote"]),
     _fn("list_memories", "列出当前用户在当前企业可用的长期偏好和任务记忆。", {}, []),
     _fn("update_memory", "按用户本轮明确要求更正一条长期偏好。",
@@ -983,7 +982,9 @@ TOOL_SPECS = [
         "识别件（图片、扫描件）第一次调用不会入库，会返回待核对的字段：逐项告诉用户并请其对照票面核对，"
         "用户下一句确认后再调用一次。",
         {"upload_ids": {"type": "array", "items": {"type": "string"}, "description": "上传文件编号，如 UP-1A2B3C4D"},
-         "user_quote": {"type": "string", "description": "用户本轮要求导入或确认核对无误的原话（逐字摘录）"}},
+         "user_quote": {"type": "string", "description": "用户本轮要求导入或确认核对无误的原话（逐字摘录）"},
+         "checked_by_user": {"type": "boolean", "description": "用户这句是在确认已对照票面核对过上一轮列出的识别字段时为 "
+                                                                "true；只是再说一遍导入不算"}},
         ["upload_ids", "user_quote"]),
     _fn("discard_uploads",
         "用户明确说不导入某些上传文件（如“这几张不导入了”）时调用：这些文件不再列出、不能再导入。不影响库内发票。",

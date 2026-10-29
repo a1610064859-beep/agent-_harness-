@@ -96,7 +96,7 @@ def test_explicit_request_imports_text_invoice_once(conn):
 
 
 @pytest.mark.parametrize("text", ["看看这张发票", "先别导入，我再核对一下", "如果经理同意再导入",
-                                  "这张可以导入吗？", "我只是举个例子：导入这张发票", "这张发票是哪家开的"])
+                                  "这张可以导入吗？", "我只是举个例子：导入这张发票"])
 def test_unclear_requests_do_not_import(conn, text):
     box, ids = upload(conn, text, [text_invoice()])
     refused(box, ids, text)
@@ -133,7 +133,7 @@ def test_recognized_invoice_imports_after_next_message_confirms(conn):
     assert (check["recognized"], check["invoice_no"], check["issue_date"], check["total"]) == \
         (True, DIGITAL_ID, "2026-09-15", "1691.23")
     say(conn, box.scope.session_id, "C001", "核对过了，没问题")
-    out = box.import_uploaded_invoices(ids, user_quote="核对过了，没问题")
+    out = box.import_uploaded_invoices(ids, user_quote="核对过了，没问题", checked_by_user=True)
     assert [x["invoice_id"] for x in out["imported"]] == [DIGITAL_ID] and stored(conn, DIGITAL_ID) == 1
 
 
@@ -151,8 +151,8 @@ def test_confirmation_must_be_the_very_next_message(conn):
     box.import_uploaded_invoices(ids, user_quote="导入这张发票")
     say(conn, box.scope.session_id, "C001", "9月发票总额多少")
     say(conn, box.scope.session_id, "C001", "确认")
-    refused(box, ids, "确认")
-    assert stored(conn, DIGITAL_ID) == 0
+    out = box.import_uploaded_invoices(ids, user_quote="确认", checked_by_user=True)
+    assert out["awaiting_check"] and stored(conn, DIGITAL_ID) == 0  # 隔了一句：重新列出请核对
 
 
 def test_repeating_the_request_asks_again_instead_of_importing(conn):
@@ -169,7 +169,7 @@ def test_confirmation_with_negated_problem_is_not_dissent(conn, reply):
     box, ids = upload(conn, "导入这张发票", [scan_invoice()])
     box.import_uploaded_invoices(ids, user_quote="导入这张发票")
     say(conn, box.scope.session_id, "C001", reply)
-    out = box.import_uploaded_invoices(ids, user_quote=reply)
+    out = box.import_uploaded_invoices(ids, user_quote=reply, checked_by_user=True)
     assert [x["invoice_id"] for x in out["imported"]] == [DIGITAL_ID]
 
 
@@ -181,7 +181,7 @@ def test_saying_import_again_is_not_a_check(conn):
     assert out["awaiting_check"] and out["imported"] == [] and stored(conn, DIGITAL_ID) == 0
 
 
-@pytest.mark.parametrize("text", ["能不能帮我把这张发票导入", "可以帮我导入吗？", "麻烦帮我导入一下"])
+@pytest.mark.parametrize("text", ["能不能帮我把这张发票导入", "麻烦帮我导入一下"])
 def test_polite_request_imports(conn, text):
     box, ids = upload(conn, text, [text_invoice()])
     assert box.import_uploaded_invoices(ids, user_quote=text)["imported"]
@@ -218,10 +218,10 @@ def test_file_name_does_not_authorize_writes_or_memory(conn):
 def test_discard_uploads(conn):
     from fiscal_harness.tools import staged_uploads
     box, ids = upload(conn, "看看这张", [text_invoice()])
-    with pytest.raises(ToolError) as e:
+    say(conn, box.scope.session_id, "C001", "这张不导入了")
+    with pytest.raises(ToolError) as e:  # 早先的话不算
         box.discard_uploads(ids, user_quote="看看这张")
     assert e.value.code == "NOT_AUTHORIZED"
-    say(conn, box.scope.session_id, "C001", "这张不导入了")
     out = box.discard_uploads(ids, user_quote="这张不导入了")
     assert out["discarded"][0]["upload_id"] == ids[0]
     assert staged_uploads(conn, box.scope.session_id, "C001") == []
@@ -247,7 +247,8 @@ def test_end_to_end_turns_with_scripted_model(conn, settings):
         {"content": "请对照票面核对号码和日期。"}]), settings, sid, "导入吧")
     assert ask.tool_calls[0]["ok"] and stored(conn, DIGITAL_ID) == 0
     llm = ScriptedLLM([
-        {"tool_calls": [tool_call("import_uploaded_invoices", {"upload_ids": [uid], "user_quote": "号码日期都对"})]},
+        {"tool_calls": [tool_call("import_uploaded_invoices", {"upload_ids": [uid], "user_quote": "号码日期都对",
+                                                                  "checked_by_user": True})]},
         {"content": "已导入。"}])
     harness.run_turn(conn, llm, settings, sid, "号码日期都对")
     assert "已请用户核对票面，等用户确认" in llm.calls[0][0]["content"] and stored(conn, DIGITAL_ID) == 1
