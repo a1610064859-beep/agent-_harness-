@@ -240,6 +240,7 @@ class Toolbox:
         found = intent.risks(src["content"])
         if "negation" in found:
             raise ToolError("NOT_AUTHORIZED", "用户在这句原话里表示暂不保存或不要修改，不能据此修改。请等用户明确要求保存。")
+        self._check_not_withdrawn(src, msgs, invoice_id)
         if not self._points_at_invoice(src):
             return self._authorize_confirmation(src, msgs, invoice_id, changes, found)
         problems = list(found)
@@ -249,6 +250,26 @@ class Toolbox:
         if problems:
             self._propose(row, changes, problems)
         return src["id"]
+
+    def _check_not_withdrawn(self, src: dict, msgs: list[dict], invoice_id: str) -> None:
+        """来源原话之后，用户又说了撤销、否定，或对这张发票另有说法时，旧原话不再作为授权（执行前按当前对话重新核对）。
+        之后只点名了其他发票的话不影响这张发票。"""
+        for m in msgs:
+            if m["id"] <= src["id"]:
+                continue
+            spans, ambiguous = self._mentions(m["content"])
+            named = {i for _, _, i in spans}
+            about = invoice_id in named or any(invoice_id in c for c in ambiguous.values())
+            if not about and (named or ambiguous):
+                continue
+            if intent.revokes(m["content"]):
+                raise ToolError("AUTHORIZATION_REVOKED", "用户在这句原话之后撤销或否定了修改（“"
+                                f"{m['content'][:40]}”），不能再据此修改 {invoice_id}。以用户最新的话为准；"
+                                "用户没有重新要求修改时不要写入。")
+            if about:
+                raise ToolError("AUTHORIZATION_SUPERSEDED", f"用户在这句原话之后又说到了 {invoice_id}（“"
+                                f"{m['content'][:40]}”），之前的话不再作为授权。如果最新的话给了修改内容，"
+                                "用那句原话作为 user_quote；只是询问是否已保存时用 query_invoices 查询，不要重复提交。")
 
     def _points_at_invoice(self, msg: sqlite3.Row) -> bool:
         named, ambiguous = self._mentions(msg["content"])
@@ -951,7 +972,8 @@ TOOL_SPECS = [
         {"rule_id": {"type": "string", "description": "如 R002"}, "month": MONTH}, ["rule_id"]),
     _fn("update_invoice",
         "修改当前企业一张发票的用途和/或备注，保存后程序会回读核对。仅在用户本次会话明确要求修改时调用；"
-        "内容必须使用用户给出的原文。返回 NEEDS_CONFIRMATION 时没有写入，需先请用户确认列出的修改。",
+        "内容必须使用用户给出的原文。返回 NEEDS_CONFIRMATION 时没有写入，需先请用户确认列出的修改；"
+        "用户之后撤销或更正过的要求不能再用（AUTHORIZATION_REVOKED / AUTHORIZATION_SUPERSEDED），以用户最新的话为准。",
         {"invoice_id": {"type": "string"},
          "purpose": {"type": "string", "description": "用户给出的用途原文"},
          "remark": {"type": "string", "description": "用户给出的备注原文"},

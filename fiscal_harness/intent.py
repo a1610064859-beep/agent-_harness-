@@ -15,6 +15,8 @@ CONDITION = re.compile(r"如果|假如|要是|倘若|万一|若是|的话|等[^�
                        r"|(同意|批准|核实|审批|签字|确认)了?(以|之)?后")
 UNCERTAIN = re.compile(r"可能|也许|大概|好像|似乎|不确定|不太确定|不清楚|没核实|未核实|待核实|待确认|没确认|还没定|看看|随便")
 EXAMPLE = re.compile(r"举例|举个例子|例如|比如|打个比方|示例|假设|模拟一下|演示一下")
+# 之后的话撤回或推翻之前的要求：之前那句原话不再作为授权
+REVOKE = re.compile(r"算了|撤销|撤回|取消|作废|收回|说错了|搞错了|弄错了|改主意|不改了|不用改了|不保存了|别动")
 QUESTION = re.compile(r"[吗么][？?。]?$|[？?]$")
 VALUE_NEGATED = re.compile(r"(不是|不要|不用|不能|别|不填|不写|而非|而不是|不再是)[填写为是成]?$")
 
@@ -43,6 +45,11 @@ def risks(text: str) -> list[str]:
     if QUESTION.search(t):
         out.append("question")
     return out
+
+
+def revokes(text: str) -> bool:
+    t = re.sub(r"\s+", "", text or "")
+    return bool(REVOKE.search(t) or NEGATION.search(t))
 
 
 def dissents(text: str) -> bool:

@@ -31,7 +31,7 @@ MONEY = r"(-?[\d,]+\.\d{2})"
 class ParsedInvoice:
     file_name: str
     sha256: str
-    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample / ocr_mineru / no_text / not_invoice
+    layout: str                      # ofd / pdf_digital / pdf_legacy / text_kv / test_sample / ocr_mineru / no_text / not_invoice / multi_invoice
     invoice_type: str | None = None  # 数电专票 / 数电普票 / 增值税电子专用发票 / 增值税电子普通发票
     invoice_no: str | None = None
     invoice_code: str | None = None
@@ -608,11 +608,17 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
                     return inv
                 _parse_ofd(inv, z)
         elif data[:5] == b"%PDF-" or ocr_mod.is_image(data):
-            text = ""
+            text, pages = "", []
             if data[:5] == b"%PDF-":
                 from pypdf import PdfReader  # 只有导入 PDF 时才需要
-                text = "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages)
+                pages = [p.extract_text() or "" for p in PdfReader(io.BytesIO(data)).pages]
+                text = "\n".join(pages)
             if text.strip():
+                if several := _several_invoices(pages):
+                    inv.layout = "multi_invoice"
+                    inv.issues.append(f"文件里有 {len(several)} 张发票（{'、'.join(several)}），一个文件只能导入一张，"
+                                      "未导入任何一张。请拆成单张文件后分别导入")
+                    return inv
                 _parse_text(inv, text)
                 if not inv.doc_kind:
                     _check_qr(inv, data)
@@ -621,6 +627,11 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
                 inv.issues.append(NO_TEXT)
                 if _read_qr(inv, data):
                     inv.notes.append("已读取发票二维码；仅凭二维码不能导入，请识别票面并人工核对")
+                return inv
+            elif len(pages) > 1:
+                # 识别按单张票面处理，多页扫描件可能是几张票合在一起，不能只认第一张
+                inv.layout = "no_text"
+                inv.issues.append(f"扫描件有 {len(pages)} 页，暂只支持一页一张发票的识别，未导入。请拆成单页文件后分别导入")
                 return inv
             else:
                 try:
@@ -639,6 +650,21 @@ def parse_bytes(name: str, data: bytes, ocr: ocr_mod.OcrFn | None = None) -> Par
         return inv
     _validate(inv)
     return inv
+
+
+def _several_invoices(pages: list[str]) -> list[str]:
+    """逐页识别发票号码：一个 PDF 里有两张以上不同的发票时返回它们的编号。同一张票的续页（如销货清单）不算。"""
+    if len(pages) < 2:
+        return []
+    ids: list[str] = []
+    for page in pages:
+        if not page.strip():
+            continue
+        one = ParsedInvoice(file_name="", sha256="", layout="unknown")
+        _parse_text(one, page)
+        if one.invoice_id and one.invoice_id not in ids:
+            ids.append(one.invoice_id)
+    return ids if len(ids) > 1 else []
 
 
 def parse_text(text: str, name: str = "text") -> ParsedInvoice:

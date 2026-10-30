@@ -145,6 +145,11 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
         log.step("error", {"type": type(e).__name__, "message": str(e)})
 
     anomalies = _check_citations(reply, scope.rule_refs)
+    if anomalies and status == "completed":
+        # 重答后仍引用了本轮没有查到的规则版本：结论未经证实，原稿只留在运行记录里，不发给用户，也不报完成
+        status = "needs_review"
+        log.step("held_reply", {"reply": reply, "anomalies": anomalies})
+        reply = HELD_REPLY
     # 本轮如切换了企业，用户消息和回复都归到最终企业，旧企业的对话不再带入新企业
     conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'", (scope.company_id, scope.run_id))
     conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) VALUES (?,?,?,?,?,?)",
@@ -155,6 +160,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     return TurnResult(scope.run_id, reply, status, scope.company_id, calls, anomalies)
 
 
+HELD_REPLY = ("这次的回答引用了本轮没有查到的规则版本，未经核对，为避免给出没有依据的结论，暂不发出。"
+              "本轮已执行的查询和保存以运行记录为准。请让我重新查询相关规则后再回答。")
 PROGRESS_TOOLS = {"summarize_month", "query_invoices", "query_bank", "check_purpose", "update_invoice"}
 PROGRESS_CHARS = 1500
 
