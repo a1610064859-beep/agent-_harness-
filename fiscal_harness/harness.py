@@ -13,7 +13,9 @@ from .config import Settings
 from .llm import LLM, LLMError
 from .runlog import RunLog, redact
 
-CITATION = re.compile(r"《([^》]+)》\s*([\d.]+)\s*版")
+_VERSION = r"\s*(?:[（(]\s*)?(?:(?:版本|version|v)\s*)?(\d+(?:\.\d+)+)\s*版?"
+CITATION = re.compile(r"《([^》]+)》" + _VERSION, re.I)
+ID_CITATION = re.compile(r"(?<![A-Za-z0-9])(R\d{3})(?!\d)\s*的?" + _VERSION, re.I)
 
 
 def _now() -> str:
@@ -113,6 +115,14 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                                     + json.dumps(result["data"], ensure_ascii=False)[:PROGRESS_CHARS])
                 log.step("tool", {"name": name, "arguments": args, "company_id": company_before, "result": result})
                 batch.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
+            forgotten = list(box.forgotten_memories)
+            memory_changed = bool(forgotten)
+            if memory_changed:
+                # 之前构建的 system、历史和工具消息也可能带旧偏好；不能在删除后再次发送或记入日志。
+                for text, placeholder in forgotten:
+                    messages = tools.scrub_memory_text(messages, text, placeholder)
+                    batch = tools.scrub_memory_text(batch, text, placeholder)
+                box.forgotten_memories.clear()
             if switched_from:
                 # 切换后重建系统输入与对话历史，旧企业的规则、记忆和本轮此前的查询结果不再带入
                 conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'",
@@ -126,6 +136,12 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                 selected = {**new_selected, "before_switch": {switched_from: selected}}
                 messages = ([{"role": "system", "content": system}]
                             + context.history(conn, scope, settings.history_chars) + [out.message])
+                for text, placeholder in forgotten:
+                    messages[1:] = tools.scrub_memory_text(messages[1:], text, placeholder)
+            elif memory_changed:
+                system, new_selected = context.build_system(conn, scope, settings.variant, settings.file_import)
+                selected = {**selected, **new_selected}
+                messages[0] = {"role": "system", "content": system}
             messages += batch
         else:
             if first_reply is not None:
@@ -175,10 +191,14 @@ def _args_text(args: str | dict) -> str:
 
 
 def _check_citations(reply: str, refs: list[dict]) -> list[str]:
-    """回复里出现的《规则名》x.x 版，必须是本轮工具实际返回过的版本，否则记为异常。"""
+    """按规则名或编号核对版本，兼容 v 前缀、括号和省略“版”的常用写法。"""
     known = {(r["name"], r["version"]) for r in refs}
+    known_ids = {(r["rule_id"].upper(), r["version"]) for r in refs if r.get("rule_id")}
     out = []
     for name, version in CITATION.findall(reply):
         if (name, version) not in known:
             out.append(f"回复引用了《{name}》{version} 版，但本轮工具没有返回该版本")
-    return out
+    for rule_id, version in ID_CITATION.findall(reply):
+        if (rule_id.upper(), version) not in known_ids:
+            out.append(f"回复引用了{rule_id.upper()} {version} 版，但本轮工具没有返回该版本")
+    return list(dict.fromkeys(out))

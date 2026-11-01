@@ -99,6 +99,7 @@ def _nearest_year_month(month: int, today: date) -> str:
 class Toolbox:
     def __init__(self, conn: sqlite3.Connection, scope: Scope):
         self.conn, self.scope = conn, scope
+        self.forgotten_memories: list[tuple[str, str]] = []
 
     # ---------- 范围与权限 ----------
 
@@ -703,7 +704,9 @@ class Toolbox:
         src = self._memory_request(user_quote, "删除偏好")
         row = self._target_memory(memory_id, src)
         memory.delete_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id)
-        _scrub_runs(self.conn, row["content"], f"[已删除的记忆 {memory_id}]")
+        placeholder = f"[已删除的记忆 {memory_id}]"
+        _scrub_runs(self.conn, self.scope, row, placeholder)
+        self.forgotten_memories.append((row["content"], placeholder))
         return {"memory_id": memory_id, "deleted": True}
 
     # ---------- 对话中上传的发票文件 ----------
@@ -913,13 +916,48 @@ def recover_pending(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
-def _scrub_runs(conn: sqlite3.Connection, text: str | None, placeholder: str) -> None:
-    """删除记忆后，把运行记录里保存的模型输入中的原文一并替换，避免删除的内容留存。"""
+def scrub_memory_text(value, text: str, placeholder: str, field: str | None = None):
+    """只清理自然语言字段；JSON 数值、键和业务字段保持原值。"""
+    if isinstance(value, dict):
+        return {k: scrub_memory_text(v, text, placeholder, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_memory_text(v, text, placeholder, field) for v in value]
+    if not isinstance(value, str) or not text:
+        return value
+    if field in {"content", "arguments"} and value.lstrip().startswith(("{", "[")):
+        try:
+            nested = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            cleaned = scrub_memory_text(nested, text, placeholder)
+            return json.dumps(cleaned, ensure_ascii=False) if cleaned != nested else value
+    if field not in {None, "content", "reply", "final_reply", "user_quote", "note", "notes", "goal", "summary", "text"}:
+        return value
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+        # 数字偏好不应把提示词中的 1000.00 或账号里的连续数字截断。
+        return re.sub(r"(?<![0-9.])" + re.escape(text) + r"(?![0-9.])", lambda _: placeholder, value)
+    return value.replace(text, placeholder)
+
+
+def _scrub_runs(conn: sqlite3.Connection, scope: Scope, pref: sqlite3.Row, placeholder: str) -> None:
+    """仅清理偏好所有者的记录；本企业偏好不改其他企业，曾选用此记忆的跨企业运行也纳入。"""
+    text = pref["content"]
     if not text:
         return
-    for needle in {text, json.dumps(text, ensure_ascii=False)[1:-1]}:
-        conn.execute("UPDATE run_steps SET payload=replace(payload, ?, ?) WHERE instr(payload, ?) > 0",
-                     (needle, placeholder, needle))
+    rows = conn.execute(
+        "SELECT s.run_id, s.seq, s.payload FROM run_steps s JOIN runs r ON r.run_id=s.run_id "
+        "WHERE r.user_id=? AND (? IS NULL OR r.company_id=? OR instr(r.selected, ?)>0 OR r.run_id=?)",
+        (scope.user_id, pref["company_id"], pref["company_id"], pref["memory_id"], scope.run_id)).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except json.JSONDecodeError:
+            continue  # 旧版已损坏的日志不能靠文本替换可靠恢复，保留原记录。
+        cleaned = scrub_memory_text(payload, text, placeholder)
+        if cleaned != payload:
+            conn.execute("UPDATE run_steps SET payload=? WHERE run_id=? AND seq=?",
+                         (json.dumps(cleaned, ensure_ascii=False), row["run_id"], row["seq"]))
 
 
 def _invoice_view(r: sqlite3.Row) -> dict:
