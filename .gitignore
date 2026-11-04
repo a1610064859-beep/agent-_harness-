@@ -24,3 +24,11 @@ dist/
 .mineru-service.lock
 /data/ocr/
 /.ocr/
+!evals/results/20261103-232141/
+!evals/results/20261103-232330/
+!evals/results/20261103-232940/
+!evals/results/20261103-233407/
+!evals/results/20261103-234326/
+!evals/results/20261103-235448/
+!evals/results/20261103-232758/
+!evals/results/20261103-233238/

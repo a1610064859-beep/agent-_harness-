@@ -1,0 +1,22 @@
+{
+ "model": "deepseek-flash",
+ "today": "2026-10-26",
+ "runs": 30,
+ "passed": 30,
+ "cases": 6,
+ "repeat": 5,
+ "usage": {
+  "prompt_tokens": 664585,
+  "completion_tokens": 45535
+ },
+ "runs_with_anomalies": {},
+ "anomaly_total": 0,
+ "by_case": {
+  "S6": "5/5",
+  "M4": "5/5",
+  "W2": "5/5",
+  "B1": "5/5",
+  "B2": "5/5",
+  "B3": "5/5"
+ }
+}
