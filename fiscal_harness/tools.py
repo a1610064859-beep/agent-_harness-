@@ -72,21 +72,92 @@ def _month_bounds(month: str) -> tuple[str, str]:
     return f"{month}-01", f"{month}-{calendar.monthrange(y, m)[1]:02d}"
 
 
+_MTOK = r"(?:1[0-2]|0?[1-9]|十[一二]?|[一二三四五六七八九])"
+_YTOK = r"(?P<y>20\d{2}|\d{2}|今|去|前|明)\s*年"
+_SEP = r"(?:[、,，/和与及跟]|到|至|~|～|—|-)"
+# 一组月份：“9月”“8、9月”“7至9月”“8月和9月”，前面可带年份（“2025年”“今年”“26年”）
+MONTH_GROUP = re.compile(rf"(?:{_YTOK}\s*(?:的\s*)?)?(?<![\d.])(?P<g>{_MTOK}(?:\s*月份?)?(?:\s*{_SEP}\s*{_MTOK}(?:\s*月份?)?)*\s*月)")
+ISO_MONTH = re.compile(r"(20\d{2})\s*(?:[-/.]|年)\s*(1[0-2]|0?[1-9])(?!\d)")
+QUARTER = re.compile(rf"(?:{_YTOK}\s*(?:的\s*)?)?(?:第\s*)?(?P<q>[一二三四1-4])\s*季度")
+QUARTER_Q = re.compile(r"(?:(?P<y1>20\d{2})\s*)?\bQ(?P<q>[1-4])\b(?:\s*(?P<y2>20\d{2}))?", re.I)
+EN_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+EN_MONTH = re.compile(r"\b(?P<m>january|february|march|april|may|june|july|august|september|october|november|december"
+                      r"|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec)\b\.?(?:\s*,?\s*(?P<y>20\d{2})\b)?", re.I)
+
+
+def _mnum(tok: str) -> int:
+    return int(tok) if tok.isdigit() else CN_NUM[tok]
+
+
+def _year_of(tok: str | None, today: date) -> int | None:
+    if not tok:
+        return None
+    offsets = {"今": 0, "去": -1, "前": -2, "明": 1}
+    if tok in offsets:
+        return today.year + offsets[tok]
+    return int(tok) if len(tok) == 4 else 2000 + int(tok)
+
+
+def _ym(month: int, year: int | None, today: date) -> str:
+    return f"{year}-{month:02d}" if year else _nearest_year_month(month, today)
+
+
+def _shift(today: date, months: int) -> str:
+    n = today.year * 12 + today.month - 1 + months
+    return f"{n // 12}-{n % 12 + 1:02d}"
+
+
 def mentioned_months(texts: list[str], today: date) -> set[str]:
-    """从用户原话里找出明确提到的月份，用于判断模型传入的月份是否有出处（不用于理解意图）。"""
+    """从用户原话里找出明确提到的月份，用于判断模型传入的月份是否有出处（不用于理解意图）。
+    宁缺勿错：认不出的说法让模型追问，但不能把一个月认成另一个月。"""
     found = set()
     for text in texts:
-        for y, m in re.findall(r"(20\d{2})\s*[-年/.]\s*(\d{1,2})", text):
-            found.add(f"{y}-{int(m):02d}")
-        for m in re.findall(r"(?<![\d年/.-])(\d{1,2})\s*月", text):
-            if 1 <= int(m) <= 12:
-                found.add(_nearest_year_month(int(m), today))
-        for m in re.findall(r"(十二|十一|十|一|二|三|四|五|六|七|八|九)\s*月", text):
-            found.add(_nearest_year_month(CN_NUM[m], today))
-        if re.search(r"上个?月", text):
-            prev = today.replace(day=1).toordinal() - 1
-            found.add(date.fromordinal(prev).strftime("%Y-%m"))
-        if re.search(r"本月|这个月|当月", text):
+        t = text or ""
+        # 先处理带年份或成组的写法，处理过的片段抹掉，避免再被按“最近的同名月份”重复认一次
+        for m in MONTH_GROUP.finditer(t):
+            year = _year_of(m["y"], today)
+            toks = re.findall(rf"{_MTOK}|{_SEP}", m["g"].replace("月份", "").replace("月", ""))
+            months, rng = [], False
+            for tok in toks:
+                if re.fullmatch(_MTOK, tok):
+                    k = _mnum(tok)
+                    if rng and months and months[-1] < k:
+                        months += list(range(months[-1] + 1, k + 1))
+                    else:
+                        months.append(k)
+                    rng = False
+                else:
+                    rng = tok in ("到", "至", "~", "～", "—", "-")
+            found |= {_ym(k, year, today) for k in months}
+        t = MONTH_GROUP.sub(" ", t)
+        for y, mo in ISO_MONTH.findall(t):
+            found.add(f"{y}-{int(mo):02d}")
+        t = ISO_MONTH.sub(" ", t)
+        for m in QUARTER.finditer(t):
+            q = _mnum(m["q"])
+            year = _year_of(m["y"], today)
+            if year is None:  # 没说年份：最近一个已开始的该季度
+                year = today.year if 3 * q - 2 <= today.month else today.year - 1
+            found |= {f"{year}-{3 * q - k:02d}" for k in (2, 1, 0)}
+        for m in QUARTER_Q.finditer(t):
+            q = int(m["q"])
+            y = m["y1"] or m["y2"]
+            year = int(y) if y else (today.year if 3 * q - 2 <= today.month else today.year - 1)
+            found |= {f"{year}-{3 * q - k:02d}" for k in (2, 1, 0)}
+        for m in EN_MONTH.finditer(t):
+            name = m["m"].lower()
+            if name in ("may", "march") and not m["y"]:
+                continue  # 不带年份的 may / march 多半是情态动词、动词
+            found.add(_ym(EN_MONTHS.index(name[:3]) + 1, int(m["y"]) if m["y"] else None, today))
+        if re.search(r"上上个?月", t):
+            found.add(_shift(today, -2))
+        if re.search(r"(?<!上)上个?月", t):
+            found.add(_shift(today, -1))
+        if re.search(r"本月|这个月|当月", t):
+            found.add(today.strftime("%Y-%m"))
+        if re.search(r"last\s+month", t, re.I):
+            found.add(_shift(today, -1))
+        if re.search(r"this\s+month", t, re.I):
             found.add(today.strftime("%Y-%m"))
     return found
 
@@ -225,6 +296,8 @@ class Toolbox:
                         result = "ambiguous"
                         break
                     return "ok"
+            if result == "no" and v in _norm(norm) and intent.REFERS_SAME.search(seg):
+                result = "ambiguous"
         return result
 
     def _authorize_write(self, invoice_id: str, user_quote: str, changes: dict) -> int:
@@ -273,6 +346,40 @@ class Toolbox:
                                 f"{m['content'][:40]}”），之前的话不再作为授权。如果最新的话给了修改内容，"
                                 "用那句原话作为 user_quote；只是询问是否已保存时用 query_invoices 查询，不要重复提交。")
 
+    def _confirms_assistant_proposal(self, src: sqlite3.Row, prior: sqlite3.Row | None, invoice_id: str,
+                                     changes: dict) -> bool:
+        """没点名发票的确认，对象可以是紧挨着的上一条助手回复里逐项列给用户的修改：那条回复须写明这张发票
+        和要填的内容（用户看到的就是这项提议），内容还须出自用户本人的原话（这句或上一句），不能只来自助手。"""
+        reply = self.conn.execute("SELECT id, content FROM messages WHERE session_id=? AND company_id=? "
+                                  "AND role='assistant' AND id<? ORDER BY id DESC LIMIT 1",
+                                  (self.scope.session_id, self.scope.company_id, src["id"])).fetchone()
+        if not reply or (prior is not None and prior["id"] > reply["id"]):
+            return False  # 没有助手回复，或助手回复之后用户还说过别的话：确认的不一定是那条回复
+        text = reply["content"]
+        if not re.search(rf"(?<![A-Za-z0-9]){re.escape(invoice_id)}(?!\d)", text, re.I):
+            return False
+        said = _norm(src["content"] + (prior["content"] if prior is not None else ""))
+        return all(_norm(v) in _norm(text) and _norm(v) in said for v in changes.values())
+
+    def _redirect_to_confirmation(self, src: sqlite3.Row, invoice_id: str) -> None:
+        """模型拿记下待确认修改的那句旧原话重新提交时：指明用户之后说的那句话。是不是确认仍由模型判断，
+        程序只接受用那句话作为出处；旧原话本身不能再次授权。"""
+        pending = self.conn.execute(
+            "SELECT * FROM pending_changes WHERE session_id=? AND company_id=? AND invoice_id=? AND status='pending' "
+            "AND after_message_id=?", (self.scope.session_id, self.scope.company_id, invoice_id, src["id"])).fetchall()
+        later = self.conn.execute("SELECT content FROM messages WHERE session_id=? AND role='user' AND id>? "
+                                  "ORDER BY id LIMIT 1", (self.scope.session_id, src["id"])).fetchone()
+        if pending and later:
+            raise ToolError("QUOTE_THE_CONFIRMATION", f"{invoice_id} 的这项修改已在用户那句话之后记为待确认，旧原话不能再次授权。"
+                                                      f"用户之后说的是“{later['content'][:60]}”：如果这句是确认，"
+                                                      "请用这句原话作为 user_quote 重新提交；不是确认就不要修改。",
+                            pending_changes=[_proposal_view(p) for p in pending])
+
+    def _is_latest(self, msg: sqlite3.Row) -> bool:
+        last = self.conn.execute("SELECT MAX(id) FROM messages WHERE session_id=? AND role='user'",
+                                 (self.scope.session_id,)).fetchone()[0]
+        return msg["id"] == last
+
     def _points_at_invoice(self, msg: sqlite3.Row) -> bool:
         named, ambiguous = self._mentions(msg["content"])
         return bool(named or ambiguous)
@@ -301,6 +408,14 @@ class Toolbox:
         # 隔了别的话、切换过企业或上一句没点名发票，都要向用户确认
         prior = next((m for m in msgs if m["id"] == prev), None)
         if prior is None or not self._points_at_invoice(prior):
+            if self._is_latest(src) and self._confirms_assistant_proposal(src, prior, invoice_id, changes):
+                self._target_invoice(invoice_id, [m for m in (prior, src) if m is not None])
+                return src["id"]
+            if self._is_latest(src) and all(_norm(v) in _norm(src["content"]) for v in changes.values()):
+                # 本轮原话给了内容但没点名发票（“9月没填的都填办公用品”）：发票由模型按查询结果选出，
+                # 程序不直接写入，逐张记为待确认修改；用户下一句确认后才按记下的内容写入
+                self._propose(self._target_invoice(invoice_id, [src]), changes, ["unnamed"])
+            self._redirect_to_confirmation(src, invoice_id)
             raise ToolError("INVOICE_NOT_REQUESTED", f"用户这句话没有点名发票，上一句也没有，不能修改 {invoice_id}。"
                                                      "请向用户确认要改哪张发票。", named_invoices=[])
         if "example" in intent.risks(prior["content"]):
@@ -446,30 +561,63 @@ class Toolbox:
                 "rule": self._cite(self._resolve_one(self.scope.today, rule_id="R004").ref()),
                 "note": None if rows else "查询成功，没有匹配的银行记录。"}
 
-    def summarize_month(self, month: str) -> dict:
-        self._require("read")
-        self._check_month(month)
+    def _month_totals(self, month: str) -> dict:
+        """某月三项合计（整数分）。发票、银行收入、银行支出分别统计，互不抵减。"""
         start, end = _month_bounds(month)
         cid = self.scope.company_id
         inv = self.conn.execute("SELECT COUNT(*) n, COALESCE(SUM(amount_cents),0) s FROM invoices "
                                 "WHERE company_id=? AND issue_date BETWEEN ? AND ?", (cid, start, end)).fetchone()
-        bank = {r["direction"]: r for r in self.conn.execute(
+        bank = {r["direction"]: (r["n"], r["s"]) for r in self.conn.execute(
             "SELECT direction, COUNT(*) n, COALESCE(SUM(amount_cents),0) s FROM bank_txns "
             "WHERE company_id=? AND txn_date BETWEEN ? AND ? GROUP BY direction", (cid, start, end))}
-        income, expense = bank.get("income"), bank.get("expense")
-        as_of = date.fromisoformat(end)
+        return {"invoice": (inv["n"], inv["s"]), "income": bank.get("income", (0, 0)),
+                "expense": bank.get("expense", (0, 0)), "as_of": date.fromisoformat(end)}
+
+    @staticmethod
+    def _totals_view(t: dict) -> dict:
+        return {"invoice_count": t["invoice"][0], "invoice_total": fmt(t["invoice"][1]),
+                "bank_income_count": t["income"][0], "bank_income_total": fmt(t["income"][1]),
+                "bank_expense_count": t["expense"][0], "bank_expense_total": fmt(t["expense"][1])}
+
+    def _amount_rules(self, as_of: date) -> list:
+        return [self._cite(r.ref()) for r in knowledge.resolve(self.conn, self.scope.company_id, as_of=as_of)
+                if r.chosen and r.chosen["topic"] in ("amount", "bank")]
+
+    def summarize_month(self, month: str) -> dict:
+        self._require("read")
+        self._check_month(month)
+        t = self._month_totals(month)
         memory.update_task(self.conn, self._task()["task_id"], month=month)
-        empty = inv["n"] == 0 and not bank
-        return {"company_id": cid, "month": month, "unit": "元",
-                "invoice_count": inv["n"], "invoice_total": fmt(inv["s"]),
-                "bank_income_count": income["n"] if income else 0,
-                "bank_income_total": fmt(income["s"] if income else 0),
-                "bank_expense_count": expense["n"] if expense else 0,
-                "bank_expense_total": fmt(expense["s"] if expense else 0),
+        empty = not any(t[k][0] for k in ("invoice", "income", "expense"))
+        return {"company_id": self.scope.company_id, "month": month, "unit": "元", **self._totals_view(t),
                 "calculation": "发票总额=全部发票价税合计之和；银行收入、支出按方向分别相加，互不抵减",
-                "rules": [self._cite(r.ref()) for r in knowledge.resolve(self.conn, cid, as_of=as_of)
-                          if r.chosen and r.chosen["topic"] in ("amount", "bank")],
+                "rules": self._amount_rules(t["as_of"]),
                 "note": "查询成功，该月没有发票和银行记录，合计为 0.00 元。" if empty else None}
+
+    def summarize_months(self, months: list[str]) -> dict:
+        """多个月份的三项合计：逐月给出，并由程序算出跨月合计，模型不必自己加总。"""
+        self._require("read")
+        wanted = list(dict.fromkeys(m.strip() for m in months))
+        if not 2 <= len(wanted) <= 12:
+            raise ToolError("BAD_ARG", "months 需要 2 到 12 个不同的月份；只查一个月请用 summarize_month。")
+        for m in wanted:
+            self._check_month(m)
+        wanted.sort()
+        per = {m: self._month_totals(m) for m in wanted}
+        combined = {k: (sum(per[m][k][0] for m in wanted), sum(per[m][k][1] for m in wanted))
+                    for k in ("invoice", "income", "expense")}
+        rules = []
+        for m in wanted:  # 每个月按当月有效的版本；版本相同的只列一次
+            for r in self._amount_rules(per[m]["as_of"]):
+                if r not in rules:
+                    rules.append(r)
+        return {"company_id": self.scope.company_id, "months": wanted, "unit": "元",
+                "by_month": [{"month": m, **self._totals_view(per[m])} for m in wanted],
+                "combined": self._totals_view(combined),
+                "calculation": "跨月合计=各月对应项相加（整数分计算）；发票、银行收入、银行支出仍分别统计，互不抵减",
+                "rules": rules,
+                "note": "查询成功，这些月份都没有发票和银行记录，合计为 0.00 元。"
+                        if not any(combined[k][0] for k in combined) else None}
 
     def check_purpose(self, month: str) -> dict:
         self._require("read")
@@ -487,10 +635,25 @@ class Toolbox:
         return {**status, "rule_changed_since_last_check": sorted(previous) or None,
                 "hint": "空白或只有空格视为未填写；备注不能代替用途；不能根据销售方或项目名称推测用途。"}
 
+    def _rule_as_of(self, month: str | None) -> tuple[date, str | None]:
+        """规则查询的月份只用来选版本：用户没说过的月份不让整次查询失败（那样模型会为一个与月份无关的问题追问月份），
+        改按今天适用的版本，并注明，由模型决定是否需要向用户说明。"""
+        if not month:
+            return self.scope.today, None
+        try:
+            return date.fromisoformat(_month_bounds(self._check_month(month))[1]), None
+        except ToolError as e:
+            if e.code != "MONTH_UNCONFIRMED":
+                raise
+            return self.scope.today, (f"用户没有说过 {month}，已按今天（{self.scope.today}）适用的版本查询。"
+                                      "如果答案取决于业务月份，请向用户说明或询问月份。")
+
     def search_rules(self, query: str, month: str | None = None) -> dict:
         self._require("read")  # 企业适用的规则属于该企业资料，无权访问的企业不能查看
-        as_of = date.fromisoformat(_month_bounds(self._check_month(month))[1]) if month else self.scope.today
+        as_of, month_note = self._rule_as_of(month)
         result = knowledge.search(self.conn, self.scope.company_id, query, as_of=as_of)
+        if month_note:
+            result["month_note"] = month_note
         for s in result["snippets"]:
             self._cite({k: s[k] for k in ("rule_id", "name", "version", "effective_from")})
         if not result["snippets"]:
@@ -499,10 +662,12 @@ class Toolbox:
 
     def get_rule(self, rule_id: str, month: str | None = None) -> dict:
         self._require("read")
-        as_of = date.fromisoformat(_month_bounds(self._check_month(month))[1]) if month else self.scope.today
+        as_of, month_note = self._rule_as_of(month)
         rule = knowledge.full_text(self.conn, self.scope.company_id, rule_id.strip().upper(), as_of=as_of)
         if not rule:
             raise ToolError("NO_RULE", f"{rule_id} 对当前企业在 {as_of} 没有有效版本。")
+        if month_note:
+            rule = {**rule, "month_note": month_note}
         self._cite({k: rule[k] for k in ("rule_id", "name", "version", "effective_from")})
         return rule
 
@@ -1015,6 +1180,10 @@ MONTH = {"type": "string", "description": "YYYY-MM，必须是用户说过或任
 TOOL_SPECS = [
     _fn("summarize_month", "由程序计算当前企业某月发票总额、银行收入、银行支出（分别统计）。查询金额时使用。",
         {"month": MONTH}, ["month"]),
+    _fn("summarize_months", "由程序计算当前企业多个月份（2–12 个）的发票总额、银行收入、银行支出：逐月列出并给出跨月合计，"
+        "三项仍分别统计。用户要几个月加起来、季度或多月对比时使用，不要自己加总。",
+        {"months": {"type": "array", "items": {"type": "string"},
+                    "description": "YYYY-MM 列表，每个月都必须是用户说过或任务记忆中的月份"}}, ["months"]),
     _fn("query_invoices", "查询当前企业某月发票明细，可按发票编号筛选或只看未填用途的。",
         {"month": MONTH, "invoice_ids": {"type": "array", "items": {"type": "string"}},
          "missing_purpose_only": {"type": "boolean"}}, ["month"]),

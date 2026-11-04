@@ -184,7 +184,8 @@ def test_amounts_and_dates_are_not_versions(conn, settings, reply):
     sid = harness.start_session(conn, 'U001', 'C001')
     llm = ScriptedLLM([{'tool_calls': [tool_call('get_rule', {'rule_id': 'R002', 'month': '2026-09'})]},
                        {'content': reply}])
-    result = harness.run_turn(conn, llm, settings, sid, '甲企业9月用途规则是什么？')
+    # 提问里带上 1000.00：本测试只看版本号解析，金额出处由 test_review_20261103 覆盖
+    result = harness.run_turn(conn, llm, settings, sid, '甲企业9月用途规则是什么？以前是不是1000.00元为界？')
     assert result.status == 'completed' and not result.anomalies, result.anomalies
 
 

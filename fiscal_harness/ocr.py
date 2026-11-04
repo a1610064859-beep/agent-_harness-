@@ -10,6 +10,7 @@ import io
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -84,14 +85,32 @@ def from_settings(settings) -> OcrFn | None:
 
 # ---------- 二维码 ----------
 
+# PDFium 不是线程安全的：网页（uvicorn 线程池）或评测并发渲染 PDF 时会损坏堆内存、整个进程崩溃。
+# 所有 PDFium 调用都在这把锁里串行执行。
+_PDFIUM_LOCK = threading.Lock()
+
+
+def _render_first_page(data: bytes):
+    import pypdfium2 as pdfium
+    with _PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(data)
+        try:
+            page = doc[0]
+            try:
+                return page.render(scale=200 / 72).to_pil().copy()
+            finally:
+                page.close()
+        finally:
+            doc.close()
+
+
 def read_qr(data: bytes) -> str | None:
     """读取唯一有效的发票二维码；内容冲突时拒绝采用任意一个。"""
     import zxingcpp
     from PIL import Image, ImageOps
 
     if data[:5] == b"%PDF-":
-        import pypdfium2 as pdfium
-        images = [pdfium.PdfDocument(data)[0].render(scale=200 / 72).to_pil()]
+        images = [_render_first_page(data)]
     else:
         images = [ImageOps.exif_transpose(Image.open(io.BytesIO(data)))]
     found = set()

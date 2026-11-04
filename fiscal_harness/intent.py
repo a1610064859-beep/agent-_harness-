@@ -21,6 +21,8 @@ QUESTION = re.compile(r"[吗么][？?。]?$|[？?]$")
 VALUE_NEGATED = re.compile(r"(不是|不要|不用|不能|别|不填|不写|而非|而不是|不再是)[填写为是成]?$")
 
 SPLIT_EACH = re.compile(r"分别")
+# “F002填A，F003也一样”：值是对另一张发票说的，这张只是指代；程序不替用户认定，转为请用户确认
+REFERS_SAME = re.compile(r"也一样|也是一样|同上|一样的|相同|同样|也这样|也照此|也按这个|也填这个|也是这个")
 SAME_FOR_ALL = re.compile(r"都|均|全部|一样|同样|统一")
 PARTS = re.compile(r"和|与|以及|及|跟|、|/")
 LEAD_VERB = re.compile(r"^(的?(用途|备注))?(都|均)?(填写|填成|填为|填|写成|写为|写|改成|改为|改|为|是|记为|记)[:：]?")
@@ -58,7 +60,8 @@ def dissents(text: str) -> bool:
 
 RISK_TEXT = {"negation": "表示暂不保存或不要修改", "condition": "带有条件（如“如果…再…”）",
              "uncertain": "表示不确定或只是让你看看", "example": "只是举例或假设", "question": "是在询问",
-             "ambiguous": "多张发票的内容不能逐一对应"}
+             "ambiguous": "多张发票的内容不能逐一对应",
+             "unnamed": "没有点名具体发票，要按列出的发票逐张确认"}
 
 
 def split_each(seg: str) -> list[str]:

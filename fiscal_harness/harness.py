@@ -78,6 +78,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     progress: list[str] = []      # 本轮已完成的步骤，切换企业后由程序带入，避免丢失进度
     first_reply = None            # 引用核对前的回复：重答没能完成时仍用它
     forgotten_turn: list[tuple[str, str]] = []  # 本轮删除的偏好：结束时从回复与本轮记录中清除
+    own: list[dict] = []          # 本轮模型自己的输出：不能作为金额出处
     try:
         for step in range(settings.max_steps):
             specs = tools.tool_specs(settings.variant, settings.file_import)
@@ -88,15 +89,27 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                     usage_total[k] = usage_total.get(k, 0) + v
             log.step("llm_output", {"message": out.message, "usage": out.usage, "model": out.model})
             messages.append(out.message)
+            own.append(out.message)
             if not out.message.get("tool_calls"):
                 reply = out.message.get("content", "").strip()
-                bad = _check_citations(reply, scope.rule_refs)
+                cites, amounts = _check_citations(reply, scope.rule_refs), _check_amounts(reply, _evidence(messages, own))
+                bad = cites + amounts
                 if bad and first_reply is None and step + 2 < settings.max_steps:
-                    # 引用了本轮工具没有返回的规则版本：请模型先取得条款或去掉该引用，只重答一次
+                    # 引用了本轮工具没有返回的规则版本，或报了工具和用户都没给过的金额：请模型改正，只重答一次
                     first_reply = reply
                     log.step("citation_check", {"anomalies": bad})
-                    messages.append({"role": "user", "content": "[程序核对] " + "；".join(bad) + "。请先查到该规则条款"
-                                     "再引用；查不到就去掉该引用并说明资料不足。直接给出完整回复，不要提到这条核对。"})
+                    fix = []
+                    if cites:
+                        fix.append("请先查到该规则条款再引用；查不到就去掉该引用并说明资料不足")
+                    if amounts:
+                        fix.append("金额只能用工具返回的数字，不要自己加减、相抵或换算；需要的合计请调用相应工具，"
+                                   "工具没给的合计、差额就不报")
+                    # 带上用户本轮原话：否则模型常把这条核对当成新问题来回答（“已核对规则原文……”），
+                    # 用户真正的问题反而没答，下一轮再错位补答
+                    messages.append({"role": "user", "content": "[程序核对] " + "；".join(bad) + "。" + "；".join(fix)
+                                     + "。然后重新完整回答用户本轮的话："
+                                     f"「{redact(user_message)}」。回复是给用户看的，只回答这句话，"
+                                     "不要提到这条核对，也不要说“已核对规则”之类的话。"})
                     continue
                 break
             switched_from, batch = None, []
@@ -166,8 +179,10 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
         log.step("error", {"type": type(e).__name__, "message": str(e)})
 
     anomalies = _check_citations(reply, scope.rule_refs)
+    if status == "completed":
+        anomalies += _check_amounts(reply, _evidence(messages, own))
     if anomalies and status == "completed":
-        # 重答后仍引用了本轮没有查到的规则版本：结论未经证实，原稿只留在运行记录里，不发给用户，也不报完成
+        # 重答后仍引用了本轮没有查到的规则版本或来历不明的金额：结论未经证实，原稿只留在运行记录里，不发给用户，也不报完成
         status = "needs_review"
         log.step("held_reply", {"reply": reply, "anomalies": anomalies})
         reply = HELD_REPLY
@@ -186,9 +201,9 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     return TurnResult(scope.run_id, reply, status, scope.company_id, calls, anomalies)
 
 
-HELD_REPLY = ("这次的回答引用了本轮没有查到的规则版本，未经核对，为避免给出没有依据的结论，暂不发出。"
-              "本轮已执行的查询和保存以运行记录为准。请让我重新查询相关规则后再回答。")
-PROGRESS_TOOLS = {"summarize_month", "query_invoices", "query_bank", "check_purpose", "update_invoice"}
+HELD_REPLY = ("这次的回答引用了本轮没有查到的规则版本，或给出了没有查询依据的金额，未经核对，为避免给出没有依据的结论，"
+              "暂不发出。本轮已执行的查询和保存以运行记录为准。请让我重新查询后再回答。")
+PROGRESS_TOOLS = {"summarize_month", "summarize_months", "query_invoices", "query_bank", "check_purpose", "update_invoice"}
 PROGRESS_CHARS = 1500
 
 
@@ -224,3 +239,34 @@ def _cited(pattern: re.Pattern, reply: str):
             if len(version.split(".")[0]) > 2 or nxt in _UNIT_AFTER:
                 continue
         yield m["name"], version
+
+
+AMOUNT = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?![\d])")
+
+
+def _amounts(text: str) -> set[str]:
+    out = set()
+    for m in AMOUNT.finditer(text or ""):
+        a, b = m.group(1).replace(",", ""), m.group(2)
+        if re.fullmatch(r"20\d{2}", a) and 1 <= int(b) <= 12 and not re.match(r"\s*元", text[m.end():]):
+            continue  # “2026.09 起”是年月，不是金额
+        out.add(f"{int(a)}.{b}")
+    return out
+
+
+def _evidence(messages: list[dict], own: list[dict]) -> list[dict]:
+    """金额的出处：系统输入、用户原话、工具结果和本轮之前的对话；本轮模型自己的输出和程序核对提示不算。"""
+    return [m for m in messages if not any(m is o for o in own)
+            and not str(m.get("content") or "").startswith("[程序核对]")]
+
+
+def _check_amounts(reply: str, context: list[dict]) -> list[str]:
+    """回复里的金额（两位小数）须出现在本轮模型输入里：工具结果、用户原话或之前已核对的对话。
+    模型自己加减、相抵或换算出的数字（如“收入减支出的净额”）找不到出处，记为异常。"""
+    known: set[str] = set()
+    for m in context:
+        known |= _amounts(m.get("content") if isinstance(m.get("content"), str) else json.dumps(m.get("content"),
+                                                                                                ensure_ascii=False))
+    unknown = sorted(_amounts(reply) - known - {"0.00"}, key=lambda x: float(x))
+    return [f"回复中的金额 {a} 不是工具返回的，也没有出现在对话中" for a in unknown]
+

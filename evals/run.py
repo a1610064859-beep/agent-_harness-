@@ -89,7 +89,7 @@ def main(argv=None):
     for r in rows:
         mark = "PASS" if r["passed"] else "FAIL"
         print(f"[{mark}] {r['case_id']}#{r['attempt']} {r['title']}" + ("" if r["passed"] else f" → {r['failed_checks']}")
-              + (f"  ⚠ 规则引用异常 {len(r['anomalies'])} 条" if r["anomalies"] else ""))
+              + (f"  ⚠ 引用与金额核对异常 {len(r['anomalies'])} 条" if r["anomalies"] else ""))
     passed = sum(r["passed"] for r in rows)
     # 异常（回复引用了本轮工具未返回的规则版本）单独统计，不计入通过条件；口径待定，见 docs/reviews
     anomalies = {f"{r['case_id']}#{r['attempt']}": len(r["anomalies"]) for r in rows if r["anomalies"]}
@@ -102,7 +102,7 @@ def main(argv=None):
     (out_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n通过 {passed}/{len(rows)}（{len(cases)} 个案例 × {args.repeat} 次）｜模型 {llm.model}｜tokens {usage}")
-    print(f"规则引用异常：{sum(anomalies.values())} 条，涉及 {len(anomalies)} 次运行（不计入通过条件）")
+    print(f"引用与金额核对异常：{sum(anomalies.values())} 条，涉及 {len(anomalies)} 次运行（不计入通过条件）")
     print(f"明细：{out_dir}")
     return 0 if passed == len(rows) else 1
 
