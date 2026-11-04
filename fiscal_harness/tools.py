@@ -632,7 +632,23 @@ class Toolbox:
         memory.sync_purpose_items(self.conn, task["task_id"], self.scope.company_id,
                                   [r["invoice_id"] for r in status["missing_required"]], status["filled"], label)
         status.pop("filled")
+        changes = []
+        for lab in sorted(previous):  # 规则变化：由程序给出新旧版本的要求对比，模型不必去查已被取代的原文
+            rid, ver = lab.split(" ", 1)
+            row = self.conn.execute("SELECT name, params, status, effective_from FROM rule_versions "
+                                    "WHERE rule_id=? AND version=?", (rid, ver)).fetchone()
+            if row:
+                # 旧版本由本工具返回，回复里说明“由 1.0 版改为 1.1 版”时可以引用；判断依据仍是现行版本
+                self._cite({"rule_id": rid, "name": row["name"], "version": ver, "effective_from": row["effective_from"]})
+                cents = json.loads(row["params"] or "{}").get("purpose_required_min_cents")
+                changes.append({"before": f"{rid}《{row['name']}》{ver} 版（{'已停用' if row['status'] != 'active' else '已被取代'}）",
+                                "before_requirement": None if cents is None else _requirement(cents),
+                                "now": f"{ref['rule_id']}《{ref['name']}》{ref['version']} 版",
+                                "now_requirement": status["requirement"]})
         return {**status, "rule_changed_since_last_check": sorted(previous) or None,
+                "rule_change": changes or None,
+                "rule_change_note": ("规则版本变了：可以用 rule_change 中新旧版本的要求向用户说明差异；"
+                                     "判断哪些必填只依据现行版本。") if changes else None,
                 "hint": "空白或只有空格视为未填写；备注不能代替用途；不能根据销售方或项目名称推测用途。"}
 
     def _rule_as_of(self, month: str | None) -> tuple[date, str | None]:
@@ -1016,6 +1032,11 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _requirement(threshold_cents: int) -> str:
+    return ("每张发票都必须填写用途" if threshold_cents == 0
+            else f"金额大于或等于 {fmt(threshold_cents)} 元的发票必须填写用途")
+
+
 def purpose_status(conn: sqlite3.Connection, company_id: str, month: str) -> dict:
     """按适用的有效用途规则检查某月发票（纯计算，不改任务记忆）。工具与演示页概览共用。"""
     if month not in PURPOSE_CHECK_MONTHS:
@@ -1042,8 +1063,7 @@ def purpose_status(conn: sqlite3.Connection, company_id: str, month: str) -> dic
         else:
             optional_blank.append(r)
     return {"company_id": company_id, "month": month, "rule": resolved.ref(),
-            "requirement": "每张发票都必须填写用途" if threshold == 0
-            else f"金额大于或等于 {fmt(threshold)} 元的发票必须填写用途",
+            "requirement": _requirement(threshold),
             "excluded_versions": resolved.excluded,
             "missing_required": [_invoice_view(r) for r in missing],
             "missing_required_total": fmt(sum(r["amount_cents"] for r in missing)),

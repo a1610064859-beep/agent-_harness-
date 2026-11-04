@@ -281,3 +281,34 @@ def test_rule_lookup_with_unconfirmed_month_falls_back_to_today(box_for):
     assert "month_note" in out
     assert "month_note" in box.get_rule("R002", month="2026-09")
     assert "month_note" not in box.get_rule("R002")
+
+
+# ---------- 规则变化：程序给出新旧版本要求的对比 ----------
+
+def test_rule_change_reports_old_and_new_requirement(box_for, conn):
+    from fiscal_harness import knowledge
+    box = box_for("U001", "C002")
+    box.check_purpose("2026-09")
+    knowledge.add_version(conn, "R003", "1.1", "单张发票金额大于或等于 500.00 元时必须填写用途。",
+                          effective_from="2026-09-01")
+    change = box.check_purpose("2026-09")["rule_change"]
+    assert change == [{"before": "R003《乙企业发票用途规则》1.0 版（已被取代）",
+                       "before_requirement": "金额大于或等于 1000.00 元的发票必须填写用途",
+                       "now": "R003《乙企业发票用途规则》1.1 版",
+                       "now_requirement": "金额大于或等于 500.00 元的发票必须填写用途"}]
+    assert box.check_purpose("2026-09")["rule_change"] is None
+
+
+def test_rule_change_explanation_citing_old_version_is_not_held(conn, settings):
+    from fiscal_harness import knowledge
+    sid = harness.start_session(conn, "U001", "C002")
+    say(conn, sid, "C002", "9月哪些必须填用途？")
+    tools.Toolbox(conn, harness.session_scope(conn, sid, settings.today)).check_purpose("2026-09")
+    knowledge.add_version(conn, "R003", "1.1", "单张发票金额大于或等于 500.00 元时必须填写用途。",
+                          effective_from="2026-09-01")
+    llm = ScriptedLLM([
+        {"tool_calls": [tool_call("check_purpose", {"month": "2026-09"})]},
+        {"content": "依据《乙企业发票用途规则》1.1 版，门槛由 R003 1.0 版的 1000.00 元降为 500.00 元。"},
+    ])
+    res = harness.run_turn(conn, llm, settings, sid, "还剩哪些没处理？")
+    assert res.status == "completed" and not res.anomalies, res.anomalies
