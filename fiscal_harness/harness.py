@@ -13,9 +13,11 @@ from .config import Settings
 from .llm import LLM, LLMError
 from .runlog import RunLog, redact
 
-_VERSION = r"\s*(?:[（(]\s*)?(?:(?:版本|version|v)\s*)?(\d+(?:\.\d+)+)\s*版?"
-CITATION = re.compile(r"《([^》]+)》" + _VERSION, re.I)
-ID_CITATION = re.compile(r"(?<![A-Za-z0-9])(R\d{3})(?!\d)\s*的?" + _VERSION, re.I)
+_VERSION = (r"\s*(?:[（(]\s*)?(?P<pre>(?:版本|version|v)\s*)?(?P<ver>\d+(?:\.\d+)+)(?![\d.])"
+            r"(?P<suf>\s*版)?")
+CITATION = re.compile(r"《(?P<name>[^》]+)》" + _VERSION, re.I)
+ID_CITATION = re.compile(r"(?<![A-Za-z0-9])(?P<name>R\d{3})(?!\d)\s*的?" + _VERSION, re.I)
+_UNIT_AFTER = set("元%％万千年月日号天张笔")
 
 
 def _now() -> str:
@@ -75,6 +77,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     reply, status = "", "completed"
     progress: list[str] = []      # 本轮已完成的步骤，切换企业后由程序带入，避免丢失进度
     first_reply = None            # 引用核对前的回复：重答没能完成时仍用它
+    forgotten_turn: list[tuple[str, str]] = []  # 本轮删除的偏好：结束时从回复与本轮记录中清除
     try:
         for step in range(settings.max_steps):
             specs = tools.tool_specs(settings.variant, settings.file_import)
@@ -116,8 +119,10 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                 log.step("tool", {"name": name, "arguments": args, "company_id": company_before, "result": result})
                 batch.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(result, ensure_ascii=False)})
             forgotten = list(box.forgotten_memories)
-            memory_changed = bool(forgotten)
-            if memory_changed:
+            forgotten_turn += forgotten
+            memory_changed = bool(forgotten) or box.memory_revised
+            box.memory_revised = False
+            if forgotten:
                 # 之前构建的 system、历史和工具消息也可能带旧偏好；不能在删除后再次发送或记入日志。
                 for text, placeholder in forgotten:
                     messages = tools.scrub_memory_text(messages, text, placeholder)
@@ -136,7 +141,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                 selected = {**new_selected, "before_switch": {switched_from: selected}}
                 messages = ([{"role": "system", "content": system}]
                             + context.history(conn, scope, settings.history_chars) + [out.message])
-                for text, placeholder in forgotten:
+                for text, placeholder in forgotten_turn:
                     messages[1:] = tools.scrub_memory_text(messages[1:], text, placeholder)
             elif memory_changed:
                 system, new_selected = context.build_system(conn, scope, settings.variant, settings.file_import)
@@ -166,6 +171,9 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
         status = "needs_review"
         log.step("held_reply", {"reply": reply, "anomalies": anomalies})
         reply = HELD_REPLY
+    for text, placeholder in forgotten_turn:
+        # 模型可能在删除后的回复里复述原文（“已删除偏好：……”），回复和其后记录的步骤也要清除
+        reply = tools.scrub_memory_text(reply, text, placeholder)
     # 本轮如切换了企业，用户消息和回复都归到最终企业，旧企业的对话不再带入新企业
     conn.execute("UPDATE messages SET company_id=? WHERE run_id=? AND role='user'", (scope.company_id, scope.run_id))
     conn.execute("INSERT INTO messages (session_id, company_id, role, content, run_id, created_at) VALUES (?,?,?,?,?,?)",
@@ -173,6 +181,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     selected["rules_cited_by_tools"] = [f"{r['rule_id']} {r['version']}" for r in scope.rule_refs]
     log.finish(reply=reply, status=status, company_id=scope.company_id, selected=selected, usage=usage_total,
                anomalies=anomalies)
+    for text, placeholder in forgotten_turn:
+        tools.scrub_run(conn, scope.run_id, text, placeholder)
     return TurnResult(scope.run_id, reply, status, scope.company_id, calls, anomalies)
 
 
@@ -195,10 +205,22 @@ def _check_citations(reply: str, refs: list[dict]) -> list[str]:
     known = {(r["name"], r["version"]) for r in refs}
     known_ids = {(r["rule_id"].upper(), r["version"]) for r in refs if r.get("rule_id")}
     out = []
-    for name, version in CITATION.findall(reply):
+    for name, version in _cited(CITATION, reply):
         if (name, version) not in known:
             out.append(f"回复引用了《{name}》{version} 版，但本轮工具没有返回该版本")
-    for rule_id, version in ID_CITATION.findall(reply):
+    for rule_id, version in _cited(ID_CITATION, reply):
         if (rule_id.upper(), version) not in known_ids:
             out.append(f"回复引用了{rule_id.upper()} {version} 版，但本轮工具没有返回该版本")
     return list(dict.fromkeys(out))
+
+
+def _cited(pattern: re.Pattern, reply: str):
+    """带“版/版本/v”标记的一律按版本核对；没有标记的数字只有像版本号时才算，
+    避免把“R002 1000.00元”“R002 2026.09 起”这类金额、日期误判为引用。"""
+    for m in pattern.finditer(reply):
+        version = m["ver"]
+        if not (m["pre"] or m["suf"]):
+            nxt = reply[m.end():].lstrip()[:1]
+            if len(version.split(".")[0]) > 2 or nxt in _UNIT_AFTER:
+                continue
+        yield m["name"], version

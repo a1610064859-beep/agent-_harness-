@@ -4,7 +4,7 @@
 
 | 项 | 结果 | 明细 |
 |---|---|---|
-| 确定性测试 `python -m pytest -q` | **283 passed, 2 skipped** | 含附加功能默认关闭的入口测试（`tests/test_file_import_flag.py`）；跳过的 2 项需要本机 MinerU |
+| 确定性测试 `python -m pytest -q` | **322 passed**（2026-11-02，`fix/review-20261101`） | 含附加功能默认关闭的入口测试（`tests/test_file_import_flag.py`）；需要本机 MinerU 的用例未安装时跳过 |
 | 多轮评测 `python -m evals.run --repeat 3` | **114/114**（38 个案例 × 3 次） | `evals/results/20261028-190738/`；tokens 输入 1,191,787、输出 68,032。见第 7 节 |
 | 对比实验 `python -m evals.experiment` | 程序解析 精确 34/35、可接受 35/35；模型自选 精确 31/35、可接受 33/35 | `evals/results/experiment-20261028-190900/`，新增耗时统计，见第 7 节 |
 | 模型输入预算对比（`FH_HISTORY_CHARS` 6000 vs 800） | 两档都是 27/27；输入 tokens 只差约 2%（案例只有 2–3 轮，测不出差别） | 见第 7 节 |

@@ -111,7 +111,7 @@ scripts/setup.sh
 ## 验证
 
 ```bash
-python -m pytest -q                  # 285 项确定性测试，不调用模型，也不需要安装 MinerU（二维码相关的测试需要 zxingcpp，未安装时跳过）
+python -m pytest -q                  # 322 项确定性测试，不调用模型，也不需要安装 MinerU（二维码相关的测试需要 zxingcpp，未安装时跳过）
 python -m evals.run --repeat 3       # 38 个多轮案例（含 5 个导入后的案例、5 个对话上传案例），真实模型
 python -m evals.experiment           # 对比实验：规则由程序解析 vs 由模型自选
 python -m evals.demo_run             # 按演示脚本走一遍，并导出关键运行记录

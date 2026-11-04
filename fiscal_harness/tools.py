@@ -100,6 +100,7 @@ class Toolbox:
     def __init__(self, conn: sqlite3.Connection, scope: Scope):
         self.conn, self.scope = conn, scope
         self.forgotten_memories: list[tuple[str, str]] = []
+        self.memory_revised = False  # 本批次更正过偏好：harness 据此重建 system，后续步骤不再看到旧内容
 
     # ---------- 范围与权限 ----------
 
@@ -698,6 +699,7 @@ class Toolbox:
         self._target_memory(memory_id, src)
         content = self._grounded(content, src)
         memory.update_preference(self.conn, memory_id, self.scope.user_id, self.scope.company_id, content)
+        self.memory_revised = True
         return {"memory_id": memory_id, "content": content}
 
     def forget_memory(self, memory_id: str, user_quote: str) -> dict:
@@ -941,15 +943,21 @@ def scrub_memory_text(value, text: str, placeholder: str, field: str | None = No
 
 
 def _scrub_runs(conn: sqlite3.Connection, scope: Scope, pref: sqlite3.Row, placeholder: str) -> None:
-    """仅清理偏好所有者的记录；本企业偏好不改其他企业，曾选用此记忆的跨企业运行也纳入。"""
+    """仅清理偏好所有者的记录；本企业偏好不改其他企业，曾选用此记忆的跨企业运行也纳入。
+    本轮的对话消息暂不改：同一轮后续工具还要按原话核对授权，由 harness 在本轮结束时清理。"""
     text = pref["content"]
     if not text:
         return
-    rows = conn.execute(
-        "SELECT s.run_id, s.seq, s.payload FROM run_steps s JOIN runs r ON r.run_id=s.run_id "
-        "WHERE r.user_id=? AND (? IS NULL OR r.company_id=? OR instr(r.selected, ?)>0 OR r.run_id=?)",
-        (scope.user_id, pref["company_id"], pref["company_id"], pref["memory_id"], scope.run_id)).fetchall()
-    for row in rows:
+    run_ids = [r["run_id"] for r in conn.execute(
+        "SELECT run_id FROM runs WHERE user_id=? AND (? IS NULL OR company_id=? OR instr(selected, ?)>0 OR run_id=?)",
+        (scope.user_id, pref["company_id"], pref["company_id"], pref["memory_id"], scope.run_id))]
+    for run_id in run_ids:
+        scrub_run(conn, run_id, text, placeholder, messages=run_id != scope.run_id)
+
+
+def scrub_run(conn: sqlite3.Connection, run_id: str, text: str, placeholder: str, messages: bool = True) -> None:
+    """把一次运行的步骤、首尾文本（runs.user_message / final_reply）和对应对话消息中的偏好原文换成占位符。"""
+    for row in conn.execute("SELECT seq, payload FROM run_steps WHERE run_id=?", (run_id,)).fetchall():
         try:
             payload = json.loads(row["payload"])
         except json.JSONDecodeError:
@@ -957,7 +965,17 @@ def _scrub_runs(conn: sqlite3.Connection, scope: Scope, pref: sqlite3.Row, place
         cleaned = scrub_memory_text(payload, text, placeholder)
         if cleaned != payload:
             conn.execute("UPDATE run_steps SET payload=? WHERE run_id=? AND seq=?",
-                         (json.dumps(cleaned, ensure_ascii=False), row["run_id"], row["seq"]))
+                         (json.dumps(cleaned, ensure_ascii=False), run_id, row["seq"]))
+    run = conn.execute("SELECT user_message, final_reply FROM runs WHERE run_id=?", (run_id,)).fetchone()
+    if run:
+        conn.execute("UPDATE runs SET user_message=?, final_reply=? WHERE run_id=?",
+                     (scrub_memory_text(run["user_message"], text, placeholder),
+                      scrub_memory_text(run["final_reply"], text, placeholder), run_id))
+    if messages:
+        for row in conn.execute("SELECT id, content FROM messages WHERE run_id=?", (run_id,)).fetchall():
+            cleaned = scrub_memory_text(row["content"], text, placeholder)
+            if cleaned != row["content"]:
+                conn.execute("UPDATE messages SET content=? WHERE id=?", (cleaned, row["id"]))
 
 
 def _invoice_view(r: sqlite3.Row) -> dict:

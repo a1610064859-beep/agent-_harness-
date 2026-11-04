@@ -125,3 +125,70 @@ def test_alternate_good_citation_uses_tool_evidence(conn, settings, reply):
                        {'content': reply}])
     result = harness.run_turn(conn, llm, settings, sid, '甲企业9月用途规则是什么？')
     assert result.status == 'completed' and not result.anomalies
+
+
+# ---------- 补充：删除后复述原文、金额日期不当作版本号、更正后重建 system ----------
+
+def test_reply_echoing_deleted_preference_is_scrubbed(conn, settings):
+    sid = harness.start_session(conn, 'U001', 'C001')
+    text = '称呼用户为王会计'
+    mid = memory.add_preference(conn, 'U001', 'C001', text)
+    llm = ScriptedLLM([
+        {'tool_calls': [tool_call('forget_memory', {'memory_id': mid, 'user_quote': '删除这条偏好'})]},
+        {'content': f'已删除偏好“{text}”。'},
+    ])
+    result = harness.run_turn(conn, llm, settings, sid, '删除这条偏好')
+    assert result.status == 'completed' and text not in result.reply and mid in result.reply
+    assert text not in json.dumps(runlog.load(conn, result.run_id), ensure_ascii=False)
+    stored = [r[0] for r in conn.execute('SELECT content FROM messages WHERE session_id=?', (sid,))]
+    assert not any(text in m for m in stored)
+
+
+def test_forgetting_scrubs_earlier_history_and_run_text(conn, settings):
+    sid = harness.start_session(conn, 'U001', 'C001')
+    text = '回答只用中文'
+    harness.run_turn(conn, ScriptedLLM([{'content': f'好的，以后{text}。'}]), settings, sid, '你好')
+    mid = memory.add_preference(conn, 'U001', 'C001', text)
+    llm = ScriptedLLM([
+        {'tool_calls': [tool_call('forget_memory', {'memory_id': mid, 'user_quote': '删除这条偏好'})]},
+        {'content': '已删除。'},
+    ])
+    harness.run_turn(conn, llm, settings, sid, '删除这条偏好')
+    assert text not in json.dumps(llm.calls[1], ensure_ascii=False)
+    nxt = ScriptedLLM([{'content': '好的。'}])
+    harness.run_turn(conn, nxt, settings, sid, '继续')
+    assert text not in json.dumps(nxt.calls[0], ensure_ascii=False)
+    assert not conn.execute('SELECT 1 FROM runs WHERE instr(final_reply, ?)>0', (text,)).fetchone()
+
+
+def test_update_memory_refreshes_system_within_turn(conn, settings):
+    sid = harness.start_session(conn, 'U001', 'C001')
+    mid = memory.add_preference(conn, 'U001', 'C001', '回答简短')
+    llm = ScriptedLLM([
+        {'tool_calls': [tool_call('update_memory', {'memory_id': mid, 'content': '回答详细',
+                                                    'user_quote': '把这条偏好改成回答详细'})]},
+        {'content': '已更正。'},
+    ])
+    result = harness.run_turn(conn, llm, settings, sid, '把这条偏好改成回答详细')
+    assert result.tool_calls[0]['ok'], result.tool_calls
+    assert '回答详细' in llm.calls[1][0]['content'] and '回答简短' not in llm.calls[1][0]['content']
+
+
+@pytest.mark.parametrize('reply', [
+    '依据R002 2.0版，R002 1000.00元以上的发票每张必填用途。',
+    '依据R002 2.0版，R002 2026.09 起执行，每张必填。',
+    '依据《甲企业发票用途规则》2.0版，按《甲企业发票用途规则》 1000.00 元为界的旧规定已不适用。',
+    '依据《甲企业发票用途规则》2.0版和R002 2.0版，每张必填。',
+])
+def test_amounts_and_dates_are_not_versions(conn, settings, reply):
+    sid = harness.start_session(conn, 'U001', 'C001')
+    llm = ScriptedLLM([{'tool_calls': [tool_call('get_rule', {'rule_id': 'R002', 'month': '2026-09'})]},
+                       {'content': reply}])
+    result = harness.run_turn(conn, llm, settings, sid, '甲企业9月用途规则是什么？')
+    assert result.status == 'completed' and not result.anomalies, result.anomalies
+
+
+def test_adjacent_citations_are_both_checked():
+    refs = [{'rule_id': 'R002', 'name': '甲企业发票用途规则', 'version': '2.0'}]
+    bad = harness._check_citations('《甲企业发票用途规则》2.0《甲企业发票用途规则》1.0', refs)
+    assert bad == ['回复引用了《甲企业发票用途规则》1.0 版，但本轮工具没有返回该版本']
