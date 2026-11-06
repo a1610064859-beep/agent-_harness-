@@ -93,7 +93,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
             if not out.message.get("tool_calls"):
                 reply = out.message.get("content", "").strip()
                 cites, amounts = _check_citations(reply, scope.rule_refs), _check_amounts(reply, _evidence(messages, own))
-                bad = cites + amounts
+                saves = _check_saves(conn, scope, reply)
+                bad = cites + amounts + saves
                 if bad and first_reply is None and step + 2 < settings.max_steps:
                     # 引用了本轮工具没有返回的规则版本，或报了工具和用户都没给过的金额：请模型改正，只重答一次
                     first_reply = reply
@@ -102,6 +103,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                     if cites:
                         fix.append("请先查到该规则条款再引用；查不到就去掉该引用并说明资料不足"
                                    + _cite_hint(conn, scope, reply))
+                    if saves:
+                        fix.append("要保存的请调用 update_invoice，以回读核验结果为准；没有保存成功的不要说已保存")
                     if amounts:
                         fix.append("金额只能用工具返回的数字，不要自己加减、相抵或换算；需要的合计请调用相应工具，"
                                    "工具没给的合计、差额就不报")
@@ -181,7 +184,7 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
 
     anomalies = _check_citations(reply, scope.rule_refs)
     if status == "completed":
-        anomalies += _check_amounts(reply, _evidence(messages, own))
+        anomalies += _check_amounts(reply, _evidence(messages, own)) + _check_saves(conn, scope, reply)
     if anomalies and status == "completed":
         # 重答后仍引用了本轮没有查到的规则版本或来历不明的金额：结论未经证实，原稿只留在运行记录里，不发给用户，也不报完成
         status = "needs_review"
@@ -202,8 +205,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
     return TurnResult(scope.run_id, reply, status, scope.company_id, calls, anomalies)
 
 
-HELD_REPLY = ("这次的回答引用了本轮没有查到的规则版本，或给出了没有查询依据的金额，未经核对，为避免给出没有依据的结论，"
-              "暂不发出。本轮已执行的查询和保存以运行记录为准。请让我重新查询后再回答。")
+HELD_REPLY = ("这次的回答引用了本轮没有查到的规则版本、给出了没有查询依据的金额，或说了没有回读核验的保存，"
+              "未经核对，为避免给出没有依据的结论，暂不发出。本轮已执行的查询和保存以运行记录为准。请让我重新查询后再回答。")
 PROGRESS_TOOLS = {"summarize_month", "summarize_months", "query_invoices", "query_bank", "check_purpose", "update_invoice"}
 PROGRESS_CHARS = 1500
 
@@ -214,6 +217,12 @@ def _args_text(args: str | dict) -> str:
     except json.JSONDecodeError:
         return str(args)
     return json.dumps(data, ensure_ascii=False)
+
+
+def _check_saves(conn: sqlite3.Connection, scope: tools.Scope, reply: str) -> list[str]:
+    """回复说发票已保存，须有本会话回读通过的写入（2026-11-05 千问 L2：只调了 complete_task 就说“已保存，回读一致”）。"""
+    return [f"回复说{'发票' if i == '?' else i}已保存，但本会话没有{'' if i == '?' else '这张发票'}回读通过的保存记录"
+            for i in tools.unverified_save_claims(conn, scope, reply)]
 
 
 def _check_citations(reply: str, refs: list[dict]) -> list[str]:

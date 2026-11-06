@@ -814,6 +814,11 @@ class Toolbox:
         if pending and not abandon_pending:
             raise ToolError("PENDING_ITEMS", f"还有未处理事项：{'、'.join(pending)}。如用户明确不再处理，"
                                              "设置 abandon_pending=true。", pending=pending)
+        if bad := unverified_save_claims(self.conn, self.scope, summary):
+            # 总结会写进任务记忆，下次会话会被当成事实；没保存成功的不能写成“已保存”
+            raise ToolError("SAVE_NOT_VERIFIED", "总结里说" + ("、".join(b for b in bad if b != "?") or "发票")
+                            + "已保存，但本会话没有回读通过的保存记录。用户要求保存的，先调用 update_invoice，"
+                              "以回读结果为准；否则总结里不要说已保存。", invoices=bad)
         memory.update_task(self.conn, task["task_id"], note=f"结束：{summary}")
         memory.close_task(self.conn, task["task_id"])
         return {"closed": task["task_id"], "abandoned": pending}
@@ -1069,6 +1074,42 @@ def purpose_status(conn: sqlite3.Connection, company_id: str, month: str) -> dic
             "missing_required_total": fmt(sum(r["amount_cents"] for r in missing)),
             "blank_but_not_required": [r["invoice_id"] for r in optional_blank],
             "filled_count": len(filled), "invoice_count": len(rows), "filled": filled}
+
+
+# ---------- 保存说法核对 ----------
+# 回复或任务总结说某张发票“已保存/已写入/已改为……”时，须有本会话回读通过的写入记录。
+# 这是核对模型输出的说法，不是猜用户意图：找不到证据就请模型重答，仍不符就扣下（与金额、规则版本核对同一机制）。
+_SAVE_CLAIM = re.compile(r"(?:已经|均已|都已|已)(?P<mid>[^，,。；;！!？?\n]{0,8}?)"
+                         r"(?:保存|写入|更新|更正|修改|改为|改成|填为|录入|补填)")
+_CLAIM_NEG = re.compile(r"[不没未别勿]|无法")
+_CLAIM_PAST = re.compile(r"之前|上次|此前|以前|早先|上一[次轮个]|上回|昨天")
+_CLAIM_OTHER = re.compile(r"偏好|记住|记忆|任务|待办|规则|格式")
+_SENTENCE = re.compile(r"[^。；;！!？?\n]+")
+
+
+def unverified_save_claims(conn: sqlite3.Connection, scope: Scope, text: str) -> list[str]:
+    """返回“说已保存、却没有本会话回读通过的写入”的发票编号；说已保存却点不出发票、本轮又没有任何写入时返回 ["?"]。"""
+    ids = [r["invoice_id"] for r in conn.execute("SELECT invoice_id FROM invoices WHERE company_id=?", (scope.company_id,))]
+    id_re = re.compile(r"(?<![A-Za-z0-9])(" + "|".join(map(re.escape, sorted(ids, key=len, reverse=True))) + r")(?![A-Za-z0-9])") \
+        if ids else None
+    claimed, bare = set(), False
+    for sent in _SENTENCE.findall(text or ""):
+        hits = [m for m in _SAVE_CLAIM.finditer(sent) if not _CLAIM_NEG.search(m["mid"])]
+        if not hits or _CLAIM_PAST.search(sent) or _CLAIM_OTHER.search(sent):
+            continue
+        named = set(id_re.findall(sent)) if id_re else set()
+        if named:
+            claimed |= named
+        elif "用途" in sent or "备注" in sent or len(sent.strip()) <= 8:
+            bare = True
+    verified = {r["invoice_id"] for r in conn.execute(
+        "SELECT invoice_id FROM operations WHERE session_id=? AND company_id=? AND status='verified'",
+        (scope.session_id, scope.company_id))}
+    out = sorted(claimed - verified)
+    if bare and not claimed and not conn.execute(
+            "SELECT 1 FROM operations WHERE run_id=? AND status='verified'", (scope.run_id,)).fetchone():
+        out.append("?")
+    return out
 
 
 def verify_operation(conn: sqlite3.Connection, op_id: str) -> tuple[bool, sqlite3.Row | None]:

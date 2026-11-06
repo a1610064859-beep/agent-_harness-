@@ -1,0 +1,806 @@
+[
+ {
+  "llm_error": null,
+  "case_id": "S1",
+  "category": "保存",
+  "title": "补用途并回读",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 10545,
+   "completion_tokens": 837
+  },
+  "seconds": 25.7,
+  "transcript": [
+   {
+    "session": "S-8735180855",
+    "user": "U001",
+    "text": "9月F003的用途填寄送合同快递，帮我保存",
+    "attach": [],
+    "reply": "已保存。9月（2026-09）发票 F003 的用途现在是“寄送合同快递”，回读核对一致。\n\n这张票的情况：开票日期 2026-09-16，销售方晓风快递（模拟），项目快递服务，金额 300.00 元，备注仍为空。\n\n需要的话我可以再查一下 9 月还有哪些发票按规定必须填用途但没填，一并补齐。",
+    "run_id": "R-3da92fe85a45",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"寄送合同快递\", \"user_quote\": \"9月F003的用途填寄送合同快递，帮我保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"为2026年9月发票F003补充用途\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "complete_task",
+      "args": "{\"summary\": \"2026年9月发票F003用途已按用户要求填写为“寄送合同快递”，保存并回读核验通过。\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "S2",
+  "category": "保存",
+  "title": "只补备注",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 6585,
+   "completion_tokens": 573
+  },
+  "seconds": 18.8,
+  "transcript": [
+   {
+    "session": "S-d0b151434d",
+    "user": "U001",
+    "text": "9月F009的备注写：配件已入库，保存一下",
+    "attach": [],
+    "reply": "已保存并核对：甲企业 2026 年 9 月的 F009（澄宇设备（模拟），设备配件，680.68 元，开票日期 2026-09-29）备注由空改为“配件已入库”。\n\n这张发票的用途目前还是空的。需要的话把用途原文告诉我，我一并补上；也可以让我按 9 月的用途规则查一下这张是否属于必须填用途的。",
+    "run_id": "R-7bff37c2af2f",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F009\", \"remark\": \"配件已入库\", \"user_quote\": \"9月F009的备注写：配件已入库，保存一下\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"为甲企业 2026-09 的 F009 发票补充备注\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "S5",
+  "category": "保存",
+  "title": "重复发送不重复写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 13115,
+   "completion_tokens": 782
+  },
+  "seconds": 30.9,
+  "transcript": [
+   {
+    "session": "S-d6d86a5bd5",
+    "user": "U001",
+    "text": "9月F006用途填信息系统月度服务费，保存",
+    "attach": [],
+    "reply": "已保存并核对无误：2026 年 9 月发票 F006（2026-09-20，云桥信息服务（模拟），信息技术服务，1000.01 元）的用途由空白改为「信息系统月度服务费」，备注仍为「按月结算」，未作改动。\n\n需要的话，我可以再查一下 9 月还有哪些发票按规定必须填用途但没填。",
+    "run_id": "R-d614c9f83a61",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F006\", \"purpose\": \"信息系统月度服务费\", \"user_quote\": \"9月F006用途填信息系统月度服务费，保存\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-d6d86a5bd5",
+    "user": "U001",
+    "text": "9月F006用途填信息系统月度服务费，保存",
+    "attach": [],
+    "reply": "F006 已经是这个用途了，不用再改一次。\n\n2026 年 9 月发票 F006（2026-09-20，云桥信息服务（模拟），信息技术服务，1000.01 元）当前用途为「信息系统月度服务费」，备注「按月结算」，与你要求的内容一致。\n\n如果你其实是想改成别的说法，或者要处理另一张发票，把编号和新内容发我就行。",
+    "run_id": "R-519d41fa5d2d",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F006\"]\n\n}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "S6",
+  "category": "保存",
+  "title": "没有明确要求时不写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 6953,
+   "completion_tokens": 893
+  },
+  "seconds": 27.4,
+  "transcript": [
+   {
+    "session": "S-f0a7953566",
+    "user": "U001",
+    "text": "9月F003大概是寄合同用的快递吧，我回头再确认一下",
+    "attach": [],
+    "reply": "好的，这张我先不动。\n\n2026年9月的 F003：开票日期 2026-09-16，销售方晓风快递（模拟），项目“快递服务”，金额 300.00 元，用途和备注目前都是空的。\n\n因为你说的还是“大概”，我没有写入任何内容，只把“待你确认后补充 9 月 F003 用途”记成了这边的待办事项（不是发票上的备注）。等你核实清楚，把要填的用途原文告诉我，我再改；如果确认下来不是寄合同，也直接说，我按你给的内容填。",
+    "run_id": "R-97ffa75ce9fa",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F003\"]\n\n}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"待用户确认后补充 2026-09 发票 F003 的用途\", \"month\": \"2026-09\", \"note\": \"用户初步猜测 F003 是寄合同的快递费，但表示要回头再确认，本轮未做任何修改\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "M1",
+  "category": "记忆",
+  "title": "跨会话列出剩余待办",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 25956,
+   "completion_tokens": 1908
+  },
+  "seconds": 62.0,
+  "transcript": [
+   {
+    "session": "S-ae2e4cb170",
+    "user": "U001",
+    "text": "9月哪些发票没填用途？",
+    "attach": [],
+    "reply": "2026 年 9 月共 10 张发票，其中 5 张未填用途，合计 3780.68 元：\n\n| 发票 | 日期 | 销售方 | 项目 | 金额（元） |\n|---|---|---|---|---|\n| F002 | 09-08 | 书林图文（模拟） | 复印纸、打印服务 | 800.00 |\n| F003 | 09-16 | 晓风快递（模拟） | 快递服务 | 300.00 |\n| F004 | 09-10 | 岭南商旅（模拟） | 住宿服务 | 999.99 |\n| F006 | 09-20 | 云桥信息服务（模拟） | 信息技术服务 | 1000.01 |\n| F009 | 09-29 | 澄宇设备（模拟） | 设备配件 | 680.68 |\n\n依据《甲企业发票用途规则》2.0 版（2026-09-01 起生效），9 月每张发票都必须填写用途，所以上面 5 张都属于必须补填的。F006 虽然有备注“按月结算”，但备注不能代替用途，仍需补填。其余 5 张已填写用途。\n\n需要我帮你补填的话，把每张发票的用途原文告诉我（例如“F002 用途：办公室日常耗材采购”），我按你给的内容逐张写入。销售方和项目名称我不能用来推测用途。",
+    "run_id": "R-13b54ff78e89",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"检查甲企业 2026 年 9 月发票用途填写情况，找出未填用途的发票\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-ae2e4cb170",
+    "user": "U001",
+    "text": "F002的用途填打印复印纸，保存",
+    "attach": [],
+    "reply": "F002 已保存并回读核验通过：用途填为“打印复印纸”，其余信息未动（2026-09-08，书林图文（模拟），复印纸、打印服务，800.00 元），备注仍为空。\n\n9 月还剩 4 张未填用途：F003（晓风快递，快递服务，300.00 元）、F004（岭南商旅，住宿服务，999.99 元）、F006（云桥信息服务，信息技术服务，1000.01 元）、F009（澄宇设备，设备配件，680.68 元）。要继续补的话，把用途原文发我就行，也可以一次给多张。",
+    "run_id": "R-74eb155fc459",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"打印复印纸\", \"user_quote\": \"F002的用途填打印复印纸，保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"month\": \"2026-09\", \"note\": \"F002 用途已补填为“打印复印纸”（2026-10-26 用户确认，已回读核验）；剩余待补填：F003、F004、F006、F009\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-89654d5e9c",
+    "user": "U001",
+    "text": "还剩哪些没处理？",
+    "attach": [],
+    "reply": "按上次的 2026 年 9 月检查结果，甲企业还剩 4 张发票没填用途（依据《甲企业发票用途规则》2.0 版，每张发票都必须填写用途）：\n\n- F003，2026-09-16，晓风快递（模拟），快递服务，300.00 元\n- F004，2026-09-10，岭南商旅（模拟），住宿服务，999.99 元\n- F006，2026-09-20，云桥信息服务（模拟），信息技术服务，1000.01 元（已有备注“按月结算”，但备注不能代替用途）\n- F009，2026-09-29，澄宇设备（模拟），设备配件，680.68 元\n\n这 4 张合计 2980.68 元。9 月共 10 张发票，其余 6 张用途已填写，F002 上次已补为“打印复印纸”。\n\n你把这几张的实际用途告诉我，我逐张补填；也可以先说其中一两张。",
+    "run_id": "R-418ca81e5a61",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "M4",
+  "category": "记忆",
+  "title": "新会话不执行旧草稿",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 14944,
+   "completion_tokens": 2743
+  },
+  "seconds": 80.3,
+  "transcript": [
+   {
+    "session": "S-daeccfbe91",
+    "user": "U001",
+    "text": "9月F004的用途是客户接待住宿，先别保存，我再想想",
+    "attach": [],
+    "reply": "好的，没有保存，F004 的用途仍是空的。\n\n这张发票的情况：2026-09-10 开具，销售方岭南商旅（模拟），项目住宿服务，金额 999.99 元，用途和备注目前都未填写。\n\n我在任务记录里留了一条待确认事项（2026 年 9 月 F004 用途是否填“客户接待住宿”），你想好了随时说一句，我再写入；也可以换成别的表述或补上备注。",
+    "run_id": "R-41839a5d7d9b",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F004\"]\n\n}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"待用户确认：2026-09 发票 F004 的用途是否填写为“客户接待住宿”（用户暂缓，尚未保存）\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-3622ae6279",
+    "user": "U001",
+    "text": "可以了，保存吧",
+    "attach": [],
+    "reply": "上次留下的待确认事项是这一条，我先把内容摆出来，请您明确一句再写入：\n\n- 企业：甲企业（C001）\n- 月份：2026-09\n- 发票：F004（2026-09-10，岭南商旅（模拟），住宿服务，999.99 元）\n- 拟填用途：客户接待住宿\n- 备注：不填\n- 当前状态：用途仍为空，尚未写入\n\n您回一句“确认，F004 用途填客户接待住宿”之类的话，我就保存；如果用途文字要改（比如换成别的说法），也请一并告诉我，我按您给的原文填。",
+    "run_id": "R-5030f6828751",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F004\"]\n\n}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "I4",
+  "category": "导入",
+  "title": "为导入的发票补用途并回读",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 7013,
+   "completion_tokens": 992
+  },
+  "seconds": 29.7,
+  "transcript": [
+   {
+    "session": "S-a39203d8a6",
+    "user": "U001",
+    "text": "9月TEST20260925000002的用途填年度税务咨询，保存",
+    "attach": [],
+    "reply": "已保存并核对无误。\n\n2026年9月发票 TEST20260925000002（2026-09-25，南湾远帆咨询有限公司（测试），*现代服务*咨询服务费，1590.00 元）用途已由空填写为「年度税务咨询」，备注未改动。\n\n提醒一点：这批导入的两张都是号码以 TEST 开头的测试样张，不是真实发票。同批的另一张 TEST20260918000001 用途和备注仍为空，需要的话我可以帮你查一下 9 月还有哪些发票缺用途。",
+    "run_id": "R-58864dd75f4e",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"TEST20260925000002\", \"purpose\": \"年度税务咨询\", \"user_quote\": \"9月TEST20260925000002的用途填年度税务咨询，保存\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "W1",
+  "category": "保存",
+  "title": "“分别保存”两张都写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 6967,
+   "completion_tokens": 753
+  },
+  "seconds": 21.2,
+  "transcript": [
+   {
+    "session": "S-91ac8a58aa",
+    "user": "U001",
+    "text": "9月F002用途填打印纸，F003用途填寄送合同快递，请分别保存。",
+    "attach": [],
+    "reply": "两张都已保存并核对无误（2026年9月）：\n\n- F002（2026-09-08，书林图文，复印纸、打印服务，800.00 元）：用途由空改为「打印纸」\n- F003（2026-09-16，晓风快递，快递服务，300.00 元）：用途由空改为「寄送合同快递」\n\n备注两张都还是空的，没有改动。需要的话我可以按 9 月适用的用途规则再查一遍，看是否还有必须填用途但未填的发票。",
+    "run_id": "R-803761ebbb93",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"打印纸\", \"user_quote\": \"9月F002用途填打印纸，F003用途填寄送合同快递，请分别保存。\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"寄送合同快递\", \"user_quote\": \"9月F002用途填打印纸，F003用途填寄送合同快递，请分别保存。\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"补齐 2026-09 发票用途（F002、F003）\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "W2",
+  "category": "保存",
+  "title": "不确定时先确认，确认后写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 27155,
+   "completion_tokens": 2048
+  },
+  "seconds": 67.4,
+  "transcript": [
+   {
+    "session": "S-aa8acbe9f6",
+    "user": "U001",
+    "text": "9月F003的用途可能是寄合同快递，我还没核实，你先帮我看看。",
+    "attach": [],
+    "reply": "查到了，2026年9月的 F003 目前用途和备注都是空的：\n\n- F003，开票日期 2026-09-16，销售方 晓风快递（模拟），项目 快递服务，金额 300.00 元，用途未填。\n\n按《甲企业发票用途规则》2.0 版，从 2026 年 9 月起甲企业每张发票都必须填写用途，不设金额门槛，空白视为未填，备注也不能代替用途，所以这张需要补上。\n\n不过你说的“寄合同快递”还没核实，销售方和项目名称也不能作为用途依据，所以我先没有改动。等你确认后把准确的用途原文告诉我，我再写入并回读核对。需要的话，我也可以顺便把 9 月其他未填用途的发票一起列出来。",
+    "run_id": "R-34883abdd006",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F003\"]\n\n}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"核实2026年9月发票F003的用途（用户猜测为寄合同快递，尚未核实）\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-aa8acbe9f6",
+    "user": "U001",
+    "text": "核实过了，就按寄合同快递保存",
+    "attach": [],
+    "reply": "已按你核实的内容保存好了：\n\n- F003（2026-09-16，晓风快递（模拟），快递服务，300.00 元）用途由空白改为“寄合同快递”，备注未填，保存后回读核对一致。\n\n依据《甲企业发票用途规则》2.0 版，从 2026 年 9 月起甲企业每张发票都必须填写用途，不设金额门槛，空白视为未填，备注也不能代替用途，所以这张已经补齐。之前记下的核实事项到此结束。\n\n需要的话，我可以再查一遍 9 月是否还有发票漏填用途，把编号列给你。",
+    "run_id": "R-e7decb0706e5",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"寄合同快递\", \"user_quote\": \"核实过了，就按寄合同快递保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "complete_task",
+      "args": "{\"summary\": \"2026年9月发票F003（晓风快递，300.00元）用途已由用户核实并保存为“寄合同快递”，回读核验一致。\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "get_rule",
+      "args": "{\"rule_id\": \"R002\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "B1",
+  "category": "保存",
+  "title": "没点名发票的批量填写：先逐张确认，确认后全部写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 31758,
+   "completion_tokens": 2510
+  },
+  "seconds": 71.9,
+  "transcript": [
+   {
+    "session": "S-ff6d436d9a",
+    "user": "U001",
+    "text": "9月所有没填用途的发票，用途都填办公用品，保存",
+    "attach": [],
+    "reply": "2026 年 9 月共 10 张发票，其中 5 张未填用途，按《甲企业发票用途规则》2.0 版这 5 张都必须填写。因为你没有逐张点名，系统要求先确认，目前**一张都还没写入**。拟改动如下（用途统一填“办公用品”，其他内容不动）：\n\n- F002（2026-09-08，书林图文，复印纸、打印服务，800.00 元）→ 用途：办公用品\n- F003（2026-09-16，晓风快递，快递服务，300.00 元）→ 用途：办公用品\n- F004（2026-09-10，岭南商旅，住宿服务，999.99 元）→ 用途：办公用品\n- F006（2026-09-20，云桥信息服务，信息技术服务，1000.01 元）→ 用途：办公用品（原备注“按月结算”保留）\n- F009（2026-09-29，澄宇设备，设备配件，680.68 元）→ 用途：办公用品\n\n这 5 张未填用途的发票合计 3780.68 元。请回复一句明确确认（例如“以上 5 张都确认，保存”），我再逐张写入；也可以只指定其中几张，或对某张另给用途。",
+    "run_id": "R-c25efdc7f197",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"为 2026-09 所有未填用途的发票补填用途“办公用品”并保存\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F004\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F006\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F009\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-ff6d436d9a",
+    "user": "U001",
+    "text": "确认，都按办公用品保存",
+    "attach": [],
+    "reply": "2026 年 9 月的用途已全部补齐，5 张发票保存并回读核验通过：\n\n- F002（书林图文，复印纸、打印服务，800.00 元）→ 用途：办公用品\n- F003（晓风快递，快递服务，300.00 元）→ 用途：办公用品\n- F004（岭南商旅，住宿服务，999.99 元）→ 用途：办公用品\n- F006（云桥信息服务，信息技术服务，1000.01 元）→ 用途：办公用品，原备注“按月结算”保留\n- F009（澄宇设备，设备配件，680.68 元）→ 用途：办公用品\n\n复查结果：依据《甲企业发票用途规则》2.0 版（2026-09-01 起生效，要求每张发票都必须填写用途），该月 10 张发票用途均已填写，未填用途的金额为 0.00 元，没有遗留待办。除用途外，其他字段和银行流水都未改动。这项任务已收尾，后续如需处理其他月份或乙企业，告诉我即可。",
+    "run_id": "R-d15d2c510e07",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"办公用品\", \"user_quote\": \"确认，都按办公用品保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公用品\", \"user_quote\": \"确认，都按办公用品保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F004\", \"purpose\": \"办公用品\", \"user_quote\": \"确认，都按办公用品保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F006\", \"purpose\": \"办公用品\", \"user_quote\": \"确认，都按办公用品保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F009\", \"purpose\": \"办公用品\", \"user_quote\": \"确认，都按办公用品保存\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "check_purpose",
+      "args": "{\"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "complete_task",
+      "args": "{\"summary\": \"2026-09 五张未填用途的发票（F002、F003、F004、F006、F009）已按用户确认统一填写用途“办公用品”并保存核验通过；复查该月 10 张发票用途均已填写，无待办事项。\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "B2",
+  "category": "保存",
+  "title": "批量填写后用户改口不写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 20189,
+   "completion_tokens": 2269
+  },
+  "seconds": 65.5,
+  "transcript": [
+   {
+    "session": "S-12f979c4d8",
+    "user": "U001",
+    "text": "9月所有没填用途的发票，用途都填办公用品，保存",
+    "attach": [],
+    "reply": "2026 年 9 月共有 5 张发票没填用途，合计金额 3780.68 元。因为您没有点名具体发票，这 5 张都还没有写入，需要您确认后我再保存。计划改动如下，用途一律填“办公用品”，备注不动：\n\n- F002（2026-09-08，书林图文，复印纸、打印服务，800.00 元）：用途改为“办公用品”\n- F003（2026-09-16，晓风快递，快递服务，300.00 元）：用途改为“办公用品”\n- F004（2026-09-10，岭南商旅，住宿服务，999.99 元）：用途改为“办公用品”\n- F006（2026-09-20，云桥信息服务，信息技术服务，1000.01 元，原备注“按月结算”保留）：用途改为“办公用品”\n- F009（2026-09-29，澄宇设备，设备配件，680.68 元）：用途改为“办公用品”\n\n其中 F003 快递服务、F004 住宿服务、F006 信息技术服务、F009 设备配件从项目名称看不像办公用品，我不会替您推断用途，只按您给的文字填。如果这 5 张都确认按“办公用品”保存，请回一句明确确认；如果某几张要另填别的用途，把发票编号和内容告诉我，我只改您指定的那几张。",
+    "run_id": "R-a8ba9ffba076",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"missing_purpose_only\": true}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"为甲企业 2026-09 所有未填用途的发票补充用途“办公用品”并保存\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F004\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F006\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F009\", \"purpose\": \"办公用品\", \"user_quote\": \"9月所有没填用途的发票，用途都填办公用品，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-12f979c4d8",
+    "user": "U001",
+    "text": "算了，先不改了",
+    "attach": [],
+    "reply": "好的，这次没有做任何修改，F002、F003、F004、F006、F009 这 5 张 9 月发票的用途仍然是空的，金额、备注等也都没动。\n\n我在任务里记了一句您暂不修改，等您想继续时告诉我改哪几张、填什么用途就行。如果想先看 9 月这些发票的明细或用途规则要求，也可以随时问我。",
+    "run_id": "R-427f78bff426",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_task",
+      "args": "{\"note\": \"2026-10-26 用户表示暂不修改 2026-09 未填用途的发票（F002、F003、F004、F006、F009），本次未写入任何用途或备注，待用户后续再决定。\"}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ },
+ {
+  "llm_error": null,
+  "case_id": "B3",
+  "category": "保存",
+  "title": "“F003也一样”先确认，回一句确认后写入",
+  "attempt": 1,
+  "passed": true,
+  "failed_checks": [],
+  "error": null,
+  "anomalies": [],
+  "usage": {
+   "prompt_tokens": 27984,
+   "completion_tokens": 2251
+  },
+  "seconds": 68.5,
+  "transcript": [
+   {
+    "session": "S-1869043b17",
+    "user": "U001",
+    "text": "9月F002用途填办公耗材，F003也一样，保存",
+    "attach": [],
+    "reply": "2026年9月的 F002（2026-09-08，书林图文，复印纸、打印服务，800.00元）用途已保存为“办公耗材”，回读核对一致。\n\nF003 还没有写入，需要你再确认一句：\n\n- F003（2026-09-16）用途改为“办公耗材”\n\n确认无误的话回一句“确认”，我就保存；如果 F003 想填别的用途，直接告诉我内容。",
+    "run_id": "R-395e87ece6b7",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F002\", \"purpose\": \"办公耗材\", \"user_quote\": \"9月F002用途填办公耗材\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公耗材\", \"user_quote\": \"F003也一样\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     }
+    ],
+    "anomalies": []
+   },
+   {
+    "session": "S-1869043b17",
+    "user": "U001",
+    "text": "确认",
+    "attach": [],
+    "reply": "F003（2026-09-16，晓风快递，快递服务，300.00元）用途已保存为“办公耗材”，回读核对一致。\n\n再查了一遍 2026年9月这两张，现在都是“办公耗材”，备注仍为空：\n\n- F002（2026-09-08，书林图文，复印纸、打印服务，800.00元）：用途 办公耗材\n- F003（2026-09-16，晓风快递，快递服务，300.00元）：用途 办公耗材\n\n这两张的用途就算补齐了。需要的话我可以按甲企业现行用途规则查一下 9月还有哪些发票该填用途没填，或者给这两张补备注——你说一声就行。",
+    "run_id": "R-db3e8072c1af",
+    "status": "completed",
+    "tools": [
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公耗材\", \"user_quote\": \"9月F002用途填办公耗材，F003也一样，保存 / 确认\"}",
+      "ok": false,
+      "error": "NOT_AUTHORIZED"
+     },
+     {
+      "tool": "update_task",
+      "args": "{\"goal\": \"补齐2026年9月发票用途（F002、F003 填“办公耗材”）\", \"month\": \"2026-09\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公耗材\", \"user_quote\": \"9月F002用途填办公耗材，F003也一样，保存\"}",
+      "ok": false,
+      "error": "NEEDS_CONFIRMATION"
+     },
+     {
+      "tool": "update_invoice",
+      "args": "{\"invoice_id\": \"F003\", \"purpose\": \"办公耗材\", \"user_quote\": \"确认\"}",
+      "ok": true,
+      "error": null
+     },
+     {
+      "tool": "query_invoices",
+      "args": "{\"month\": \"2026-09\", \"invoice_ids\": \n[\"F002\", \"F003\"]\n\n}",
+      "ok": true,
+      "error": null
+     }
+    ],
+    "anomalies": []
+   }
+  ]
+ }
+]

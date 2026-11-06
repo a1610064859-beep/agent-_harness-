@@ -1,0 +1,29 @@
+{
+ "model": "qwen3.8-max",
+ "today": "2026-10-26",
+ "runs": 12,
+ "passed": 12,
+ "cases": 12,
+ "repeat": 1,
+ "usage": {
+  "prompt_tokens": 199164,
+  "completion_tokens": 18559
+ },
+ "runs_with_anomalies": {},
+ "interrupted_by_llm_error": [],
+ "anomaly_total": 0,
+ "by_case": {
+  "S1": "1/1",
+  "S2": "1/1",
+  "S5": "1/1",
+  "S6": "1/1",
+  "M1": "1/1",
+  "M4": "1/1",
+  "I4": "1/1",
+  "W1": "1/1",
+  "W2": "1/1",
+  "B1": "1/1",
+  "B2": "1/1",
+  "B3": "1/1"
+ }
+}
