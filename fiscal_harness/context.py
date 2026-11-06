@@ -9,7 +9,9 @@ import sqlite3
 from datetime import date, timedelta
 
 from . import knowledge, memory
-from .tools import LEVEL_TEXT, Scope, _pref_view, _task_view, staged_uploads
+from .tools import ATTACH_MARK, LEVEL_TEXT, Scope, _pref_view, _task_view, staged_uploads
+
+ATTACH_HINT = "（程序已解析校验这些文件，结果见系统输入“本会话上传的发票文件”）"
 
 POLICY = """\
 你是企业财税资料助手，帮助用户查询发票与银行资料、补充发票用途或备注、检查未完成事项。所有企业、数据和规则都是比赛模拟内容。
@@ -147,6 +149,10 @@ def history(conn: sqlite3.Connection, scope: Scope, budget_chars: int) -> list[d
         used += len(r["content"])
         if r["role"] == "event":
             out.append({"role": "user", "content": f"[系统事件] {r['content']}"})
+        elif r["role"] == "user" and ATTACH_MARK in r["content"]:
+            # 千问常把附件当成“没拿到识别结果”：只在模型输入里点明预检结果的位置，存储与界面不变；
+            # 附件行之后的文字不算用户原话，不构成授权
+            out.append({"role": "user", "content": r["content"] + ATTACH_HINT})
         else:
             out.append({"role": r["role"], "content": r["content"]})
     out.reverse()

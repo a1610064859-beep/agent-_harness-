@@ -100,7 +100,8 @@ def run_turn(conn: sqlite3.Connection, llm: LLM, settings: Settings, session_id:
                     log.step("citation_check", {"anomalies": bad})
                     fix = []
                     if cites:
-                        fix.append("请先查到该规则条款再引用；查不到就去掉该引用并说明资料不足")
+                        fix.append("请先查到该规则条款再引用；查不到就去掉该引用并说明资料不足"
+                                   + _cite_hint(conn, scope, reply))
                     if amounts:
                         fix.append("金额只能用工具返回的数字，不要自己加减、相抵或换算；需要的合计请调用相应工具，"
                                    "工具没给的合计、差额就不报")
@@ -227,6 +228,23 @@ def _check_citations(reply: str, refs: list[dict]) -> list[str]:
         if (rule_id.upper(), version) not in known_ids:
             out.append(f"回复引用了{rule_id.upper()} {version} 版，但本轮工具没有返回该版本")
     return list(dict.fromkeys(out))
+
+
+def _cite_hint(conn: sqlite3.Connection, scope: tools.Scope, reply: str) -> str:
+    """重答提示里给出被引用规则的编号：模型（如千问）只看到规则名时常去查别的规则，二次仍不符被扣下。
+    只列当前企业适用的规则，无权企业的规则不进模型输入；是否放行仍以本轮工具实际返回的版本为准。"""
+    known = {(r["rule_id"].upper(), r["version"]) for r in scope.rule_refs if r.get("rule_id")}
+    known_names = {(r["name"], r["version"]) for r in scope.rule_refs}
+    names = {n for n, v in _cited(CITATION, reply) if (n, v) not in known_names}
+    ids = {i.upper() for i, v in _cited(ID_CITATION, reply) if (i.upper(), v) not in known}
+    hits: dict[str, str] = {}
+    for r in conn.execute("SELECT rule_id, name, companies FROM rule_versions ORDER BY rule_id").fetchall():
+        if scope.company_id in json.loads(r["companies"] or "[]") and (r["name"] in names or r["rule_id"].upper() in ids):
+            hits.setdefault(r["rule_id"], r["name"])
+    if not hits:
+        return ""
+    return ("（" + "、".join(f"《{n}》即 {i}" for i, n in hits.items())
+            + "，可调用 get_rule 并传入该编号与业务月份；以工具返回的版本为准）")
 
 
 def _cited(pattern: re.Pattern, reply: str):

@@ -1,4 +1,4 @@
-"""模型接入。默认 OpenAI 兼容的 chat/completions + tools 协议（DeepSeek、通义、主办方统一 Key 等），
+"""模型接入。默认 OpenAI 兼容的 chat/completions + tools 协议（默认千问 Qwen3.8-Max，也支持 DeepSeek 与主办方统一 Key），
 换模型只改环境变量 LLM_BASE_URL / LLM_MODEL / LLM_API_KEY。"""
 from __future__ import annotations
 
@@ -28,10 +28,12 @@ class LLMError(RuntimeError):
 
 
 class OpenAICompat:
-    def __init__(self, base_url: str, model: str, api_key: str, effort: str | None = None, timeout: int = 120):
+    def __init__(self, base_url: str, model: str, api_key: str, effort: str | None = None, timeout: int = 180,
+                 thinking: bool | None = None):
         if not api_key:
-            raise LLMError("没有配置模型密钥：请在 .env 中设置 LLM_API_KEY 或 DEEPSEEK_API_KEY")
+            raise LLMError("没有配置模型密钥：请在 .env 中设置 LLM_API_KEY（或 DASHSCOPE_API_KEY / DEEPSEEK_API_KEY）")
         self.base_url, self.model, self._key, self.effort, self.timeout = base_url, model, api_key, effort, timeout
+        self.thinking = thinking
 
     def __repr__(self) -> str:  # 不暴露密钥
         return f"OpenAICompat({self.base_url!r}, {self.model!r})"
@@ -40,6 +42,8 @@ class OpenAICompat:
         body = {"model": self.model, "messages": messages, "tools": tools, "temperature": 0.2}
         if self.effort:
             body["reasoning_effort"] = self.effort
+        if self.thinking is not None:
+            body["enable_thinking"] = self.thinking
         data = json.dumps(body, ensure_ascii=False).encode()
         for attempt in range(3):
             req = urllib.request.Request(f"{self.base_url}/chat/completions", data=data, headers={
@@ -94,4 +98,5 @@ def tool_call(name: str, args: dict, call_id: str | None = None) -> dict:
 def from_settings(settings) -> LLM:
     if settings.llm_provider != "openai_compat":
         raise LLMError(f"暂不支持的 LLM_PROVIDER：{settings.llm_provider}")
-    return OpenAICompat(settings.llm_base_url, settings.llm_model, settings.api_key, settings.llm_effort)
+    return OpenAICompat(settings.llm_base_url, settings.llm_model, settings.api_key, settings.llm_effort,
+                      thinking=settings.llm_thinking)

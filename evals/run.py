@@ -66,7 +66,9 @@ def run_case(case: Case, settings, llm, attempt: int) -> dict:
         error = f"{type(e).__name__}: {e}"
         checks = [(False, error)]
     failed = [msg for ok, msg in checks if not ok]
-    return {"case_id": case.case_id, "category": case.category, "title": case.title, "attempt": attempt,
+    # 模型接口出错（欠费、限流耗尽、断网）中断的运行单独标出：不算通过，也不算模型或程序的失败
+    llm_error = next((t["reply"] for t in transcript if t["status"] == "llm_error"), None)
+    return {"llm_error": llm_error, "case_id": case.case_id, "category": case.category, "title": case.title, "attempt": attempt,
             "passed": not failed, "failed_checks": failed, "error": error,
             "anomalies": [a for t in transcript for a in t["anomalies"]],
             "usage": usage, "seconds": round(time.time() - started, 1), "transcript": transcript}
@@ -87,21 +89,28 @@ def main(argv=None):
     with ThreadPoolExecutor(args.workers) as pool:
         rows = list(pool.map(lambda j: run_case(j[0], settings, llm, j[1]), jobs))
     for r in rows:
-        mark = "PASS" if r["passed"] else "FAIL"
+        mark = "API " if r["llm_error"] else ("PASS" if r["passed"] else "FAIL")
         print(f"[{mark}] {r['case_id']}#{r['attempt']} {r['title']}" + ("" if r["passed"] else f" → {r['failed_checks']}")
               + (f"  ⚠ 引用与金额核对异常 {len(r['anomalies'])} 条" if r["anomalies"] else ""))
-    passed = sum(r["passed"] for r in rows)
+    # 有任何一轮遇到模型接口出错的运行单列，不计入通过：断言没覆盖到的那一轮也可能本该出错
+    interrupted = [f"{r['case_id']}#{r['attempt']}" for r in rows if r["llm_error"]]
+    passed = sum(r["passed"] and not r["llm_error"] for r in rows)
     # 异常（回复引用了本轮工具未返回的规则版本）单独统计，不计入通过条件；口径待定，见 docs/reviews
     anomalies = {f"{r['case_id']}#{r['attempt']}": len(r["anomalies"]) for r in rows if r["anomalies"]}
     usage = {k: sum(r["usage"][k] for r in rows) for k in ("prompt_tokens", "completion_tokens")}
     summary = {"model": llm.model, "today": settings.today.isoformat(), "runs": len(rows), "passed": passed,
                "cases": len(cases), "repeat": args.repeat, "usage": usage,
-               "runs_with_anomalies": anomalies, "anomaly_total": sum(anomalies.values()),
-               "by_case": {c.case_id: f"{sum(r['passed'] for r in rows if r['case_id'] == c.case_id)}/{args.repeat}"
+               "runs_with_anomalies": anomalies,
+               "interrupted_by_llm_error": interrupted, "anomaly_total": sum(anomalies.values()),
+               "by_case": {c.case_id: f"{sum(r['passed'] and not r['llm_error'] for r in rows if r['case_id'] == c.case_id)}/{args.repeat}"
                            for c in cases}}
     (out_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\n通过 {passed}/{len(rows)}（{len(cases)} 个案例 × {args.repeat} 次）｜模型 {llm.model}｜tokens {usage}")
+    if interrupted:
+        done = len(rows) - len(interrupted)
+        print(f"其中 {len(interrupted)} 次因模型接口出错中断（不是断言失败）；接口正常的 {done} 次中通过 "
+              f"{passed}/{done}")
     print(f"引用与金额核对异常：{sum(anomalies.values())} 条，涉及 {len(anomalies)} 次运行（不计入通过条件）")
     print(f"明细：{out_dir}")
     return 0 if passed == len(rows) else 1

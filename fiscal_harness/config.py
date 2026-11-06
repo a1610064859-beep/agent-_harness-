@@ -32,6 +32,7 @@ class Settings:
     llm_base_url: str
     llm_model: str
     llm_effort: str | None
+    llm_thinking: bool | None
     max_steps: int
     history_chars: int
     variant: str
@@ -47,19 +48,41 @@ class Settings:
     @property
     def api_key(self) -> str:
         # 每次现取，避免密钥被 dataclass repr 或运行记录带出
-        return os.environ.get("LLM_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
+        return (os.environ.get("LLM_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")
+                or os.environ.get("DEEPSEEK_API_KEY", ""))
+
+
+# 初赛官方跑测模型为千问 Qwen3.8-Max（阿里云百炼 DashScope 的 OpenAI 兼容接口）。
+QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+QWEN_MODEL = "qwen3.8-max"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL = "deepseek-flash"
+
+
+def _default_endpoint() -> tuple[str, str]:
+    """没写 LLM_BASE_URL / LLM_MODEL 时：只配了 DEEPSEEK_API_KEY 的旧环境仍走 DeepSeek，其余默认千问。"""
+    if os.environ.get("DEEPSEEK_API_KEY") and not (os.environ.get("LLM_API_KEY") or os.environ.get("DASHSCOPE_API_KEY")):
+        return DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+    return QWEN_BASE_URL, QWEN_MODEL
+
+
+def _flag(name: str) -> bool | None:
+    v = os.environ.get(name, "").strip().lower()
+    return None if not v else v in ("1", "true", "on", "yes")
 
 
 def load_settings() -> Settings:
     today = os.environ.get("FH_TODAY")
+    base_url, model = _default_endpoint()
     return Settings(
         db_path=Path(os.environ.get("FH_DB", ROOT / "data" / "harness.db")),
         sample_xlsx=Path(os.environ.get("FH_SAMPLE_XLSX", ROOT / "data" / "source" / "sample_data_v1.1.0.xlsx")),
         rules_docx=Path(os.environ.get("FH_RULES_DOCX", ROOT / "data" / "source" / "business_rules_v1.1.0.docx")),
         llm_provider=os.environ.get("LLM_PROVIDER", "openai_compat"),
-        llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com").rstrip("/"),
-        llm_model=os.environ.get("LLM_MODEL", "deepseek-flash"),
+        llm_base_url=(os.environ.get("LLM_BASE_URL") or base_url).rstrip("/"),
+        llm_model=os.environ.get("LLM_MODEL") or model,
         llm_effort=os.environ.get("LLM_EFFORT") or None,
+        llm_thinking=_flag("LLM_THINKING"),  # 千问：显式开关思考模式（enable_thinking），不设则用平台默认
         max_steps=int(os.environ.get("FH_MAX_STEPS", "8")),
         history_chars=int(os.environ.get("FH_HISTORY_CHARS", "6000")),
         # 对比实验：baseline=规则由程序解析；model_rules=把全部规则版本原样交给模型自行判断
